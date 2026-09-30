@@ -1,0 +1,51 @@
+{
+  "name": "aicoding-template-video",
+  "version": "2.0.0",
+  "description": "Auto-generate Vietnamese 9:16 short news videos from URL/txt using professional HyperFrames templates — Claude Code skill + OmniVoice TTS",
+  "main": "src/cli.ts",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "pipeline": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "sfx:download": "tsx scripts/download-sfx.ts",
+    "sfx:filter": "tsx scripts/filter-sfx.ts",
+    "tts:server": "tsx scripts/tts-server.ts",
+    "web": "tsx web/server.ts",
+    "typecheck:web": "tsc -p web/tsconfig.json"
+  },
+  "keywords": [
+    "video",
+    "tts",
+    "news",
+    "vietnamese",
+    "tiktok",
+    "shorts",
+    "hyperframes",
+    "claude-code",
+    "omnivoice"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
+    "axios": "^1.15.2",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "p-limit": "^7.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "@vitest/coverage-v8": "^4.1.5",
+    "msedge-tts": "^2.0.8",
+    "nock": "^14.0.13",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}

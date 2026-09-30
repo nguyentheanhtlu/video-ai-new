@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Template Video Studio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#/">
+        <span class="brand-mark">▶</span>
+        <span><b>Template Video</b><small>Studio</small></span>
+      </a>
+      <nav>
+        <a href="#/" data-nav="projects"><span>🎞️</span> Dự án</a>
+        <a href="#/new" data-nav="new"><span>✨</span> Tạo video mới</a>
+        <a href="#/templates" data-nav="templates"><span>🎨</span> Templates</a>
+        <a href="#/sfx" data-nav="sfx"><span>🔊</span> Âm thanh (SFX)</a>
+        <a href="#/jobs" data-nav="jobs"><span>⚙️</span> Tiến trình</a>
+        <a href="#/settings" data-nav="settings"><span>🛠️</span> Cài đặt</a>
+      </nav>
+      <div class="status" id="status"></div>
+    </aside>
+    <main id="view"></main>
+  </div>
+  <div id="dock"></div>
+  <div id="toasts"></div>
+  <div id="modal" class="modal hidden"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
