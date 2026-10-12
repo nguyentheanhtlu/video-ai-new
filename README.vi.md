@@ -220,6 +220,18 @@ OMNIVOICE_ENDPOINT=http://127.0.0.1:8123
 
 Server chỉ cần nhận `POST /tts` kèm `{ text }` và trả về bytes `audio/mpeg` là đủ.
 
+**Chạy song song theo cấu hình máy.** Mặc định tool tự đo số luồng CPU + RAM rồi chia ra: mấy video render
+cùng lúc, mỗi video mấy scene cùng lúc, mỗi scene mấy worker Chrome (vd máy 6 luồng / 16 GB → 2 video × 2 scene).
+Muốn tự chỉnh thì vào **Cài đặt → Hiệu năng** trên web, hoặc ghi vào `.env.local`:
+
+```env
+MAX_PARALLEL_JOBS=auto    # số video render cùng lúc (hàng đợi web)
+RENDER_CONCURRENCY=auto   # số scene render cùng lúc trong 1 video
+RENDER_WORKERS=auto       # số worker Chrome cho mỗi scene
+```
+
+Máy giật hoặc đầy RAM khi render thì giảm số xuống; muốn 1 video xong nhanh nhất thì đặt `MAX_PARALLEL_JOBS=1`.
+
 </details>
 
 ---

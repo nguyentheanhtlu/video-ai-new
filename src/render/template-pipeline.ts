@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import pLimit from "p-limit";
@@ -12,7 +12,8 @@ import {
   type SfxMixSpec,
 } from "../assets/audio-tools.js";
 import { indexSfxLibrary, pickSfxForScene, defaultPlayback } from "../assets/sfx-selector.js";
-import { composeTemplate, readTemplateMeta, templateFingerprint } from "./template-composer.js";
+import { composeTemplate, hyperframesCached, readTemplateMeta, templateFingerprint } from "./template-composer.js";
+import { planRender } from "../utils/machine.js";
 import { buildBrand } from "./brand.js";
 import { fitClipToDuration, concatVideos, muxAudioOntoVideo, extractFrame } from "./video-tools.js";
 import { log } from "../utils/logger.js";
@@ -140,7 +141,8 @@ export async function runTemplatePipeline(scriptPath: string): Promise<void> {
   const prevStamp = existsSync(stampFile) ? await readFile(stampFile, "utf8") : null;
   const frameChanged = prevStamp !== null && prevStamp !== stamp;
   if (frameChanged) log.info("  Bộ nhận diện / tiêu đề đã đổi → render lại các clip khung tin");
-  const fittedClips: string[] = [];
+  // Decide what needs rendering first (cheap, sequential), then render in parallel.
+  const plans: { scene: TemplateScript["scenes"][number]; i: number; visualDur: number; rawClip: string; fitClip: string; reuse: boolean }[] = [];
   for (let i = 0; i < script.scenes.length; i++) {
     const scene = script.scenes[i];
     const dur = sceneAudio.find((a) => a.id === scene.id)!.durationSec;
@@ -157,31 +159,62 @@ export async function runTemplatePipeline(scriptPath: string): Promise<void> {
       dynamic && existsSync(rawClip) &&
       (frameChanged || Math.abs((await getDurationSec(rawClip)) - visualDur) > 0.25);
     if (staleLength) await rm(rawClip, { force: true });
-    if (existsSync(rawClip) && !staleLength) {
-      log.info(`  scene ${scene.id}: REUSE clip — delete to force re-render`);
-    } else {
-      await composeTemplate({
-        templateId: scene.templateId,
-        inputs: scene.inputs,
-        aspect: script.aspect,
-        outputPath: rawClip,
-        fps: RENDER_FPS,
-        baseDir: outputDir,
-        brand,
-        durationSec: visualDur,
-        extraVars: {
-          __title: script.metadata.title,
-          __intro: i === 0,
-          __index: i,
-          __offset: sceneStarts[scene.id] ?? 0,
-          __total: totalAudioSec + OUTRO_HOLD_SEC,
-        },
-      });
-    }
-    await fitClipToDuration(rawClip, visualDur, fitClip, RENDER_FPS);
-    log.info(`  scene ${scene.id}: ${scene.templateId} → ${visualDur.toFixed(2)}s`);
-    fittedClips.push(fitClip);
+    plans.push({ scene, i, visualDur, rawClip, fitClip, reuse: existsSync(rawClip) });
   }
+
+  const { cores, memGb, scenes: sceneConcurrency, workers } = planRender();
+  log.info(`  Máy ${cores} luồng CPU / ${memGb} GB RAM → ${sceneConcurrency} scene song song × ${workers} worker`);
+  const compose = (p: (typeof plans)[number]) =>
+    composeTemplate({
+      templateId: p.scene.templateId,
+      inputs: p.scene.inputs,
+      aspect: script.aspect,
+      outputPath: p.rawClip,
+      fps: RENDER_FPS,
+      baseDir: outputDir,
+      brand,
+      durationSec: p.visualDur,
+      workers,
+      extraVars: {
+        __title: script.metadata.title,
+        __intro: p.i === 0,
+        __index: p.i,
+        __offset: sceneStarts[p.scene.id] ?? 0,
+        __total: totalAudioSec + OUTRO_HOLD_SEC,
+      },
+    });
+  // First run on this machine: let one render install HyperFrames before fanning out.
+  const composed = new Set<number>();
+  const firstNew = plans.find((p) => !p.reuse);
+  if (firstNew && sceneConcurrency > 1 && !hyperframesCached()) {
+    await compose(firstNew);
+    composed.add(firstNew.i);
+  }
+  const renderLimit = pLimit(sceneConcurrency);
+  let renderError: unknown;
+  const fittedClips = await Promise.all(
+    plans.map((p) =>
+      renderLimit(async () => {
+        // After a failure, don't start more scenes; ones already rendering finish first.
+        if (renderError) return p.fitClip;
+        try {
+          if (p.reuse) log.info(`  scene ${p.scene.id}: REUSE clip — delete to force re-render`);
+          else if (!composed.has(p.i)) await compose(p);
+          // An untouched clip whose fitted copy is newer and the right length needs no re-encode.
+          const fitFresh =
+            p.reuse && existsSync(p.fitClip) &&
+            (await stat(p.fitClip)).mtimeMs >= (await stat(p.rawClip)).mtimeMs &&
+            Math.abs((await getDurationSec(p.fitClip)) - p.visualDur) < 0.05;
+          if (!fitFresh) await fitClipToDuration(p.rawClip, p.visualDur, p.fitClip, RENDER_FPS);
+          log.info(`  scene ${p.scene.id}: ${p.scene.templateId} → ${p.visualDur.toFixed(2)}s`);
+        } catch (e) {
+          renderError ??= e;
+        }
+        return p.fitClip;
+      }),
+    ),
+  );
+  if (renderError) throw renderError;
 
   await writeFile(stampFile, stamp);
 

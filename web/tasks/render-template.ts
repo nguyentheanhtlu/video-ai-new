@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { buildBrand } from "../../src/render/brand.js";
 import { composeTemplate, type Aspect } from "../../src/render/template-composer.js";
 import { ensureFfmpegOnPath } from "../../src/utils/ffmpeg-path.js";
+import { planRender } from "../../src/utils/machine.js";
 
 ensureFfmpegOnPath();
 
@@ -32,6 +33,8 @@ composeTemplate({
   brand: buildBrand(spec.meta),
   durationSec: spec.durationSec,
   extraVars: spec.extraVars,
+  // A single clip: this job's whole share of the machine goes to one render.
+  workers: planRender().perJob,
   fps: 30,
 }).catch((e) => {
   console.error(e instanceof Error ? e.message : e);

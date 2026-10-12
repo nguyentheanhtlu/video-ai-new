@@ -18,6 +18,9 @@ export const SETTING_KEYS = [
   "BRAND_ACCENT",
   "BRAND_LOGO",
   "SFX_MODE",
+  "MAX_PARALLEL_JOBS",
+  "RENDER_CONCURRENCY",
+  "RENDER_WORKERS",
 ] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -39,6 +42,9 @@ export const DEFAULTS: Record<SettingKey, string> = {
   BRAND_ACCENT: "#ffd400",
   BRAND_LOGO: "assets/logo.svg",
   SFX_MODE: "outro",
+  MAX_PARALLEL_JOBS: "auto",
+  RENDER_CONCURRENCY: "auto",
+  RENDER_WORKERS: "auto",
 };
 
 export function getSetting(key: SettingKey): string {

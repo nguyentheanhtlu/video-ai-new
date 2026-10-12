@@ -9,9 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDurationSec } from "../src/assets/audio-tools.js";
 import { defaultPlayback, indexSfxLibrary, pickSfxForScene } from "../src/assets/sfx-selector.js";
+import { planParallelism, planRender } from "../src/utils/machine.js";
 import { listEdgeVoices, startTtsServer, synthesize } from "../scripts/tts-server.js";
 import { articleFromText, fetchArticle, type Article } from "./lib/article.js";
-import { activeJobFor, bus, cancelJob, enqueue, getJob, listJobs, type JobContext } from "./lib/jobs.js";
+import { activeJobFor, bus, cancelJob, enqueue, getJob, listJobs, pump, type JobContext } from "./lib/jobs.js";
 import { generateScript, type GenerateOptions } from "./lib/llm.js";
 import {
   ensureFfmpegOnPath,
@@ -106,13 +107,21 @@ app.get("/api/status", h(async () => {
     sfx: sfxCount(),
     sfxRaw: existsSync(SFX_RAW_DIR),
     llm: { provider, configured: llmKey, model: getSetting(provider === "claude" ? "CLAUDE_MODEL" : "GEMINI_MODEL") },
+    parallel: parallelPlan(),
   };
 }));
+
+/** What each rendering video actually gets: the server hands every pipeline `perJob` of the budget. */
+function parallelPlan() {
+  const plan = planParallelism();
+  return planRender({ ...process.env, RENDER_BUDGET: String(plan.perJob) });
+}
 
 // ── Settings & voices ──────────────────────────────────────────────────────
 app.get("/api/settings", h(() => publicSettings()));
 app.put("/api/settings", h((req) => {
   updateSettings(req.body ?? {});
+  pump(); // a raised job limit applies to what's already queued
   return publicSettings();
 }));
 
@@ -209,7 +218,7 @@ app.post("/api/templates/:id/preview", h(async (req) => {
   const outputPath = join(PREVIEW_DIR, `${tpl.id}-${aspect.replace(":", "x")}.mp4`);
   const job = enqueue("preview-template", `Xem trước ${tpl.id} (${aspect})`, (ctx) =>
     renderTemplateJob(ctx, previewSpec(tpl.id, aspect, outputPath)),
-  );
+  undefined, outputPath);
   return { jobId: job.id };
 }));
 
@@ -221,7 +230,7 @@ app.post("/api/brand/preview", h(async () => {
     await renderTemplateJob(ctx, previewSpec("news-frame", "9:16", outputPath));
     spawnSync("ffmpeg", ["-y", "-v", "error", "-ss", "2.4", "-i", outputPath, "-frames:v", "1", "-q:v", "3", join(PREVIEW_DIR, "brand-9x16.jpg")], { windowsHide: true });
     return { image: "/files/.previews/brand-9x16.jpg", video: "/files/.previews/brand-9x16.mp4" };
-  });
+  }, undefined, outputPath);
   return { jobId: job.id };
 }));
 
@@ -588,7 +597,7 @@ app.post("/api/sfx/download", h((req) => {
   const max = Math.min(20, Math.max(1, Number(req.body?.max) || 5));
   const job = enqueue("sfx-download", `Tải thư viện SFX (tối đa ${max}/từ khoá)`, (ctx) =>
     ctx.runTs(["scripts/download-sfx.ts", "--max", String(max)]),
-  );
+  undefined, "sfx");
   return { jobId: job.id };
 }));
 
@@ -596,7 +605,7 @@ app.post("/api/sfx/filter", h((req) => {
   const maxSec = Math.min(15, Math.max(0.5, Number(req.body?.maxSec) || 3));
   const job = enqueue("sfx-filter", `Lọc SFX (≤ ${maxSec}s)`, (ctx) =>
     ctx.runTs(["scripts/filter-sfx.ts", "--max-sec", String(maxSec)]),
-  );
+  undefined, "sfx");
   return { jobId: job.id };
 }));
 
@@ -654,6 +663,8 @@ async function main() {
     console.log(`\n  🎬 Template Video Studio: http://localhost:${PORT}\n`);
     console.log(`  TTS: ${ttsMode === "embedded" ? "nhúng sẵn" : "dùng server có sẵn"} tại ${TTS_ENDPOINT.origin} (${getSetting("EDGE_VOICE")})`);
     console.log(`  FFmpeg: ${ffmpegDir ?? "KHÔNG TÌM THẤY — cài FFmpeg trước khi render"}`);
+    const par = parallelPlan();
+    console.log(`  Song song: ${par.cores} luồng CPU / ${par.memGb} GB RAM → ${par.jobs} video cùng lúc × ${par.scenes} scene × ${par.workers} worker`);
   });
 }
 

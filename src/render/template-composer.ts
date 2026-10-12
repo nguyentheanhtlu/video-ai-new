@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { log } from "../utils/logger.js";
@@ -12,7 +12,35 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** Repo-root/templates — where vendored HyperFrames templates live. */
 const TEMPLATES_DIR = join(__dirname, "..", "..", "templates");
 
+/** Pinned version → deterministic renders. */
+const HYPERFRAMES_VERSION = "0.6.94";
+
 export type Aspect = "16:9" | "9:16" | "1:1";
+
+let hfCached = false;
+/**
+ * True once `npx` has the pinned HyperFrames in its cache. Until then renders
+ * must not start in parallel: concurrent first-run installs corrupt the cache.
+ * Unknown cache layout → false, which only costs one sequential render.
+ */
+export function hyperframesCached(): boolean {
+    if (hfCached) return true;
+    const cache =
+        process.env.npm_config_cache ??
+        (process.platform === "win32" && process.env.LOCALAPPDATA
+            ? join(process.env.LOCALAPPDATA, "npm-cache")
+            : join(homedir(), ".npm"));
+    const npxDir = join(cache, "_npx");
+    try {
+        hfCached = readdirSync(npxDir).some((d) => {
+            const pkg = join(npxDir, d, "node_modules", "hyperframes", "package.json");
+            return existsSync(pkg) && JSON.parse(readFileSync(pkg, "utf8")).version === HYPERFRAMES_VERSION;
+        });
+    } catch {
+        /* no npx cache yet */
+    }
+    return hfCached;
+}
 
 /**
  * Each aspect renders a dedicated composition file authored at that native
@@ -48,6 +76,8 @@ export interface ComposeArgs {
     durationSec?: number;
     /** Extra template variables set by the pipeline (e.g. __title, __intro, __offset, __total). */
     extraVars?: Record<string, unknown>;
+    /** Chrome workers for this render. Omit to let HyperFrames pick ("auto" = grab the whole machine). */
+    workers?: number;
 }
 
 export interface TemplateMeta {
@@ -120,16 +150,16 @@ export async function composeTemplate(args: ComposeArgs): Promise<string> {
         cpSync(templateDir, renderDir, { recursive: true });
         const file = join(renderDir, entryFile);
         const html = readFileSync(file, "utf8").replace(
-            /data-duration="[d.]+"/,
+            /data-duration="[\d.]+"/,
             `data-duration="${args.durationSec.toFixed(2)}"`,
         );
         writeFileSync(file, html, "utf8");
     }
 
     const spawnArgs = [
-        // -y: never prompt to install. Pinned version → deterministic renders.
+        // -y: never prompt to install.
         "-y",
-        "hyperframes@0.6.94",
+        `hyperframes@${HYPERFRAMES_VERSION}`,
         "render",
         renderDir,
         "--composition",
@@ -143,6 +173,7 @@ export async function composeTemplate(args: ComposeArgs): Promise<string> {
         "--variables-file",
         varsFile,
     ];
+    if (args.workers) spawnArgs.push("--workers", String(args.workers));
 
     log.info(`Compose ${templateId} (${entryFile}) → ${outputPath}`);
 

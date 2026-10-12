@@ -220,6 +220,18 @@ OMNIVOICE_ENDPOINT=http://127.0.0.1:8123
 
 The server must accept `POST /tts` with `{ text }` and return `audio/mpeg` bytes.
 
+**Parallelism sized to your machine.** By default the tool reads CPU threads + RAM and splits them into: videos
+rendered at once, scenes rendered at once per video, and Chrome workers per scene (e.g. 6 threads / 16 GB → 2 videos × 2 scenes).
+Override in the web UI under **Settings → Performance**, or in `.env.local`:
+
+```env
+MAX_PARALLEL_JOBS=auto    # videos rendered at once (web job queue)
+RENDER_CONCURRENCY=auto   # scenes rendered at once inside one video
+RENDER_WORKERS=auto       # Chrome workers per scene
+```
+
+Lower the numbers if the machine stutters or runs out of RAM; set `MAX_PARALLEL_JOBS=1` to finish a single video fastest.
+
 </details>
 
 ---

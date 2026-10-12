@@ -352,7 +352,9 @@ async function jobsView(root) {
         isLive(j) ? el("button", { class: "btn sm danger", onclick: () => guard(() => api("POST", `/api/jobs/${j.id}/cancel`)) }, "Huỷ") : null)));
   };
   draw();
-  clear(root, el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "Tiến trình"), el("p", {}, "Các job chạy lần lượt từng cái một (render rất nặng)."))), box);
+  clear(root, el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "Tiến trình"), el("p", {}, status?.parallel
+      ? `Render tối đa ${status.parallel.jobs} video cùng lúc (máy ${status.parallel.cores} luồng CPU / ${status.parallel.memGb} GB RAM) — đổi trong Cài đặt → Hiệu năng.`
+      : "Số job chạy cùng lúc tự tính theo cấu hình máy."))), box);
   return onJob(draw);
 }
 
@@ -465,6 +467,30 @@ async function settingsView(root) {
         previewBox));
   }
 
+  // Parallelism — "auto" sizes each level from CPU cores + RAM.
+  function perfCard() {
+    const p = st.parallel;
+    const level = (key, max, autoVal) => {
+      const sel = el("select", { onchange: (e) => (form[key] = e.target.value) },
+        el("option", { value: "auto" }, `Tự động (${autoVal})`),
+        Array.from({ length: max }, (_, i) => el("option", { value: String(i + 1) }, String(i + 1))));
+      sel.value = /^d+$/.test(form[key]) && Number(form[key]) <= max ? form[key] : "auto";
+      return sel;
+    };
+    const auto = (key, val) => (/^d+$/.test(form[key]) ? "theo máy" : val);
+    return el("div", { class: "card stack" },
+      el("h2", {}, "⚡ Hiệu năng (chạy song song)"),
+      el("p", { class: "small muted", style: { margin: 0 } },
+        `Máy này: ${p.cores} luồng CPU, ${p.memGb} GB RAM → chạy được khoảng ${p.budget} Chrome render cùng lúc. `,
+        `Đang dùng: ${p.jobs} video × ${p.scenes} scene × ${p.workers} worker.`),
+      el("div", { class: "grid-2" },
+        field("Số video render cùng lúc", level("MAX_PARALLEL_JOBS", 8, auto("MAX_PARALLEL_JOBS", p.jobs)), "hàng đợi"),
+        field("Số scene render cùng lúc / video", level("RENDER_CONCURRENCY", 8, auto("RENDER_CONCURRENCY", p.scenes))),
+        field("Worker Chrome / scene", level("RENDER_WORKERS", 8, auto("RENDER_WORKERS", p.workers)))),
+      el("p", { class: "small muted", style: { margin: 0 } },
+        "Để Tự động là ổn. Máy giật/đầy RAM khi render → giảm xuống; muốn 1 video xong nhanh nhất → đặt số video cùng lúc = 1. Áp dụng cho job bắt đầu sau khi lưu."));
+  }
+
   async function saveAll() {
     const patch = { ...form };
     for (const k of Object.keys(patch)) if (k.endsWith("_SET")) delete patch[k];
@@ -502,6 +528,7 @@ async function settingsView(root) {
         })())),
       el("div", { class: "card stack" }, el("h2", {}, "✨ AI viết kịch bản"), provBox),
       brandCard(),
+      perfCard(),
       el("div", { class: "card stack" },
         el("h2", {}, "🧰 Hệ thống"),
         sys(st.ffmpeg && st.ffprobe, "FFmpeg + ffprobe", st.ffmpegDir ?? "không tìm thấy", "Cài FFmpeg rồi khởi động lại web (npm run web)."),
