@@ -9,23 +9,28 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import pLimit from "p-limit";
+import { genmaxFromEnv, genmaxSynthesize, type GenmaxVoice } from "../src/tts/genmax.js";
 import { ensureFfmpegOnPath } from "../src/utils/ffmpeg-path.js";
 
 ensureFfmpegOnPath();
 
 // Local TTS server speaking the OmniVoice contract (POST /tts { text } → audio/mpeg),
-// backed by Microsoft Edge TTS. Drop-in for OMNIVOICE_ENDPOINT — needs internet.
+// backed by Genmax when a key is set, otherwise Microsoft Edge TTS.
+// Drop-in for OMNIVOICE_ENDPOINT — needs internet.
 
 export interface VoiceSettings {
   voice: string;
   /** Relative speed, e.g. "+8%". */
   rate: string;
+  /** When set, synthesise with Genmax instead of Edge. */
+  genmax?: GenmaxVoice;
 }
 
 export function voiceFromEnv(): VoiceSettings {
   return {
     voice: process.env.EDGE_VOICE ?? "vi-VN-HoaiMyNeural",
     rate: process.env.EDGE_RATE ?? "+0%",
+    genmax: genmaxFromEnv(),
   };
 }
 
@@ -116,9 +121,10 @@ async function edgeWithRetry(text: string, voice: string): Promise<Buffer> {
  * Edge rejects non-default <prosody rate> ("+8%" → 1.08).
  */
 export async function synthesize(text: string, settings: VoiceSettings): Promise<Buffer> {
+  const tempo = 1 + (parseFloat(settings.rate) || 0) / 100;
+  if (settings.genmax) return genmaxSynthesize(text, settings.genmax, tempo);
   const parts = text.length > 90 ? splitSentences(text) : [text];
   const chunks = await Promise.all(parts.map((p) => edgeWithRetry(p, settings.voice)));
-  const tempo = 1 + (parseFloat(settings.rate) || 0) / 100;
   return finishAudio(chunks, tempo);
 }
 
@@ -175,9 +181,9 @@ export function startTtsServer(
 // CLI: `npm run tts:server`
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const endpoint = new URL(process.env.OMNIVOICE_ENDPOINT ?? "http://127.0.0.1:8123");
-  const { voice, rate } = voiceFromEnv();
+  const { voice, rate, genmax } = voiceFromEnv();
   startTtsServer(endpoint).then(
-    () => console.log(`Edge TTS server (${voice}, rate ${rate}) on ${endpoint.origin}/tts`),
+    () => console.log(`${genmax ? `Genmax TTS server (${genmax.provider} ${genmax.voiceId})` : `Edge TTS server (${voice})`}, rate ${rate} on ${endpoint.origin}/tts`),
     (e: NodeJS.ErrnoException) => {
       if (e.code === "EADDRINUSE") {
         console.error(`Port ${endpoint.port} đang bị chiếm — có thể một tts:server khác (hoặc web UI) đang chạy. Dùng luôn nó, hoặc tắt nó đi.`);
