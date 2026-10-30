@@ -55,6 +55,14 @@ export async function runTemplatePipeline(scriptPath: string): Promise<void> {
       limit(async () => {
         const out = join(voiceDir, `scene-${scene.id}.mp3`);
         const srtOut = join(voiceDir, `scene-${scene.id}.srt`);
+        // The narration each mp3 was made from: script.json may be edited outside the web UI.
+        const textFile = join(voiceDir, `scene-${scene.id}.txt`);
+        if (existsSync(out) && existsSync(textFile) && (await readFile(textFile, "utf8")) !== scene.voiceText) {
+          log.info(`  scene ${scene.id}: lời đọc đã đổi → tạo lại giọng và hình`);
+          await rm(out, { force: true });
+          await rm(join(outputDir, "clips", `scene-${scene.id}.mp4`), { force: true });
+          await rm(join(outputDir, "clips", `scene-${scene.id}-fit.mp4`), { force: true });
+        }
         if (existsSync(out)) {
           const dur = await getDurationSec(out);
           log.info(`  scene ${scene.id}: REUSE mp3 (${dur.toFixed(2)}s)`);
@@ -62,6 +70,7 @@ export async function runTemplatePipeline(scriptPath: string): Promise<void> {
         }
         log.info(`  TTS scene ${scene.id} (${scene.voiceText.length} chars)...`);
         await ttsClient.generate(scene.voiceText, out, srtOut);
+        await writeFile(textFile, scene.voiceText);
         const dur = await getDurationSec(out);
         log.info(`  scene ${scene.id}: ${dur.toFixed(2)}s`);
         return { id: scene.id, path: out, durationSec: dur };
@@ -177,6 +186,9 @@ export async function runTemplatePipeline(scriptPath: string): Promise<void> {
       workers,
       extraVars: {
         __title: script.metadata.title,
+        __voice: p.scene.voiceText,
+        __speech: sceneAudio.find((a) => a.id === p.scene.id)!.durationSec,
+        __type: p.scene.type,
         __intro: p.i === 0,
         __index: p.i,
         __offset: sceneStarts[p.scene.id] ?? 0,

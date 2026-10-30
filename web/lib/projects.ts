@@ -174,7 +174,10 @@ export async function saveScript(slug: string, next: Script) {
         await rm(f.voice, { force: true });
         invalidated.push(`${s.id}: giọng`);
       }
+      // Generated templates draw the narration as subtitles, so it's baked into the clip.
+      const subtitlesChanged = old.voiceText !== s.voiceText && getTemplate(s.templateId)?.generated === true;
       const visualChanged =
+        subtitlesChanged ||
         old.templateId !== s.templateId ||
         JSON.stringify(old.inputs) !== JSON.stringify(s.inputs) ||
         prev.aspect !== next.aspect;

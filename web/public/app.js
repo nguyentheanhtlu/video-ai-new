@@ -137,6 +137,7 @@ async function projectsView(root) {
 async function newView(root) {
   const st = status ?? (await api("GET", "/api/status"));
   const settings = await api("GET", "/api/settings");
+  const customTemplates = (await store.templates()).filter((t) => t.generated);
   let mode = "url";
   let disposeLog = null;
 
@@ -147,7 +148,15 @@ async function newView(root) {
     channelUrl: settings.CHANNEL_URL,
     extraInstructions: "",
     autoRender: true,
+    templateId: "",
+    keepScript: true,
   };
+  // Remember the sample a channel works from, as long as it still exists.
+  const lastTemplate = localStorage.getItem("templateId");
+  if (customTemplates.some((t) => t.id === lastTemplate)) {
+    opt.templateId = lastTemplate;
+    opt.length = "sample";
+  }
 
   const seg = (options, get, set) => {
     const box = el("div", { class: "seg" });
@@ -158,23 +167,45 @@ async function newView(root) {
   const field = (label, node, hint) => el("label", { class: "field" }, el("span", {}, label, hint ? el("em", {}, hint) : null), node);
 
   const urlInput = el("input", { type: "url", placeholder: "https://vnexpress.net/..." });
-  const textArea = el("textarea", { rows: 12, placeholder: "Dòng đầu tiên là tiêu đề.\nCác dòng sau là nội dung bài…" });
+  const textArea = el("textarea", { rows: 12, placeholder: "Dán kịch bản hoặc nội dung bài vào đây…" });
   const fileTxt = el("input", { type: "file", accept: ".txt,text/plain", onchange: async (e) => { const f = e.target.files[0]; if (f) textArea.value = await f.text(); } });
   const blankTitle = el("input", { type: "text", placeholder: "Tên video", value: "" });
   const fileJson = el("input", { type: "file", accept: ".json,application/json" });
 
+  const templatePicker = () => {
+    const sel = el("select", { onchange: (e) => {
+      opt.templateId = e.target.value;
+      localStorage.setItem("templateId", opt.templateId);
+      opt.length = opt.templateId ? "sample" : "standard";
+      drawForm();
+    } },
+      el("option", { value: "" }, "Khung tin tức mặc định"),
+      customTemplates.map((t) => el("option", { value: t.id }, t.name)));
+    sel.value = opt.templateId;
+    return field("Template", sel, customTemplates.length ? "theo video mẫu" : null);
+  };
+
+  const lengths = () => [
+    ...(opt.templateId ? [["sample", "Theo video mẫu"]] : []),
+    ["short", "Ngắn · ~40s"],
+    ["standard", "Chuẩn · ~100s"],
+  ];
+
   const optionsCard = () => el("div", { class: "card stack" },
     el("h3", {}, "Tuỳ chọn"),
-    mode === "url" || mode === "text" ? el("div", { class: "row between" }, el("span", { class: "muted small" }, "Độ dài"),
-      seg([["short", "Ngắn · 4–6 scene · ~40s"], ["standard", "Chuẩn · 8–12 scene · ~100s"]], () => opt.length, (v) => (opt.length = v))) : null,
-    mode !== "import" ? el("div", { class: "row between" }, el("span", { class: "muted small" }, "Khung hình"),
+    mode === "url" || mode === "text" ? templatePicker() : null,
+    mode === "text" ? field("Dùng văn bản này thế nào", seg([[true, "Đọc đúng kịch bản của tôi"], [false, "AI viết lại từ bài"]], () => opt.keepScript, (v) => { opt.keepScript = v; drawForm(); }),
+      opt.keepScript ? "giữ nguyên từng chữ" : null) : null,
+    (mode === "url" || mode === "text") && !(mode === "text" && opt.keepScript) ? el("div", { class: "row between" }, el("span", { class: "muted small" }, "Độ dài"),
+      seg(lengths(), () => opt.length, (v) => (opt.length = v))) : null,
+    mode !== "import" && !(opt.templateId && mode !== "blank") ? el("div", { class: "row between" }, el("span", { class: "muted small" }, "Khung hình"),
       seg([["9:16", "9:16 dọc"], ["16:9", "16:9 ngang"]], () => opt.aspect, (v) => (opt.aspect = v))) : null,
     mode === "url" || mode === "text" ? [
       el("div", { class: "grid-2" },
         field("Tên kênh", el("input", { type: "text", value: opt.channel, oninput: (e) => (opt.channel = e.target.value) })),
         field("URL kênh (outro)", el("input", { type: "text", value: opt.channelUrl, oninput: (e) => (opt.channelUrl = e.target.value) }))),
-      field("Yêu cầu thêm cho AI", el("textarea", { rows: 2, placeholder: "vd: giọng văn hài hước, nhấn mạnh giá bán, thêm 1 scene so sánh…", oninput: (e) => (opt.extraInstructions = e.target.value) }), "tuỳ chọn"),
-      el("label", { class: "check" }, el("input", { type: "checkbox", checked: opt.autoRender, onchange: (e) => (opt.autoRender = e.target.checked) }), "Render video ngay sau khi AI viết xong kịch bản"),
+      mode === "text" && opt.keepScript ? null : field("Yêu cầu thêm cho AI", el("textarea", { rows: 2, value: opt.extraInstructions, placeholder: "vd: giọng văn hài hước, nhấn mạnh giá bán, thêm 1 scene so sánh…", oninput: (e) => (opt.extraInstructions = e.target.value) }), "tuỳ chọn"),
+      el("label", { class: "check" }, el("input", { type: "checkbox", checked: opt.autoRender, onchange: (e) => (opt.autoRender = e.target.checked) }), mode === "text" && opt.keepScript ? "Render video ngay sau khi chia cảnh xong" : "Render video ngay sau khi AI viết xong kịch bản"),
     ] : null,
   );
 
@@ -197,7 +228,7 @@ async function newView(root) {
         `Chưa có API key cho AI (${st.llm.provider}). `, el("a", { href: "#/settings" }, "Mở Cài đặt"), " để nhập key — Gemini có gói miễn phí. Hoặc dùng tab Kịch bản trống.") : null,
       el("div", { class: "editor" },
         el("div", { class: "stack" }, main,
-          el("div", {}, el("button", { class: "btn primary", onclick: submit }, needsLlm ? "✨ Viết kịch bản bằng AI" : "Tạo dự án"))),
+          el("div", {}, el("button", { class: "btn primary", onclick: submit }, mode === "text" && opt.keepScript ? "🎬 Tạo video từ kịch bản này" : needsLlm ? "✨ Viết kịch bản bằng AI" : "Tạo dự án"))),
         el("div", { class: "side-sticky" }, optionsCard())));
   }
 
@@ -252,8 +283,55 @@ async function newView(root) {
 async function templatesView(root) {
   let aspect = "9:16";
   const grid = el("div", { class: "tpl-grid" });
+  const st = status ?? (await api("GET", "/api/status"));
+  const refUrl = el("input", { type: "url", placeholder: "https://www.youtube.com/shorts/… hoặc link TikTok" });
+  const refFile = el("input", { type: "file", accept: "video/*" });
+  const refName = el("input", { type: "text", placeholder: "Bỏ trống để lấy tiêu đề video hoặc tên file" });
+  const refProgress = el("div");
+  async function createFromSample(e) {
+    const btn = e.currentTarget;
+    const url = refUrl.value.trim();
+    const file = refFile.files[0];
+    if (!url && !file) return toast("Dán link hoặc chọn file video mẫu", "warn");
+    btn.disabled = true;
+    try {
+      let body = { url, name: refName.value.trim() };
+      if (!url) {
+        clear(refProgress, el("div", { class: "muted small" }, "Đang tải file lên…"));
+        const res = await fetch("/api/templates/reference-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? `Lỗi ${res.status}`);
+        body = { uploadId: data.uploadId, name: refName.value.trim() || file.name.replace(/\.[^.]+$/, "") };
+      }
+      const { jobId } = await api("POST", "/api/templates/from-reference", body);
+      const log = liveLog(jobId);
+      const bar = el("div", {}, progressBar(jobs.get(jobId) ?? { status: "running" }));
+      const off = onJob((j) => { if (j?.id === jobId) clear(bar, progressBar(j)); });
+      clear(refProgress, bar, log.node);
+      const job = await waitJob(jobId);
+      off();
+      log.dispose();
+      if (job.status !== "done") throw new Error(job.error ?? "Không tạo được template");
+      refUrl.value = "";
+      refFile.value = "";
+      refName.value = "";
+      clear(refProgress);
+      toast("Đã tạo template mới, chọn nó ở trang Tạo video", "ok");
+      draw(true);
+    } catch (err) {
+      clear(refProgress, el("div", { class: "callout warn small" }, err.message));
+    } finally { btn.disabled = false; }
+  }
+  const sampleCard = el("div", { class: "card stack", style: { marginBottom: "16px" } },
+    el("h2", {}, "🎬 Tạo template từ video mẫu"),
+    el("p", { class: "small muted", style: { margin: 0 } }, "AI xem video mẫu, dựng bố cục, màu chữ và nhịp kể riêng rồi lưu vào templates/. Hình và tiếng của video mẫu không được dùng lại. Mất khoảng 5–15 phút."),
+    !st.ytDlp ? el("div", { class: "callout warn small" }, "Máy chưa có yt-dlp nên chưa tải được link. Chạy winget install yt-dlp.yt-dlp rồi khởi động lại web, hoặc chọn file video bên dưới.") : null,
+    el("div", { class: "grid-2" }, el("label", { class: "field" }, el("span", {}, "Link video"), refUrl), el("label", { class: "field" }, el("span", {}, "Hoặc file video"), refFile)),
+    el("label", { class: "field" }, el("span", {}, "Tên template", el("em", {}, "tuỳ chọn")), refName),
+    el("div", {}, el("button", { class: "btn primary", onclick: createFromSample }, "✨ Tạo template")),
+    refProgress);
   async function draw(fresh = false) {
-    const list = await store.templates(fresh);
+    const list = (await store.templates(fresh)).filter((t) => t.aspects.includes(aspect));
     clear(grid, list.map((t) => {
       const preview = t.previews?.[aspect];
       const running = [...jobs.values()].find((j) => j.kind === "preview-template" && isLive(j) && j.title.includes(t.id) && j.title.includes(aspect));
@@ -268,10 +346,18 @@ async function templatesView(root) {
           el("div", { class: "row", style: { gap: "4px" } }, t.roles.map((r) => el("span", { class: `chip ${r === "hook" ? "accent" : r === "outro" ? "info" : ""}` }, r))),
           el("div", { class: "small" }, t.role),
           t.bestFor ? el("div", { class: "small muted" }, "Hợp với: ", t.bestFor) : null,
+          t.style?.outline?.length ? el("details", {}, el("summary", {}, `Khung kịch bản · ${t.style.outline.length} đoạn`),
+            el("ol", { class: "small", style: { margin: "6px 0 0", paddingLeft: "18px" } }, t.style.outline.map((o) =>
+              el("li", {}, el("b", {}, o.part), o.share ? ` (~${o.share}%)` : "", o.pattern ? el("div", { class: "muted" }, o.pattern) : null)))) : null,
           el("details", {}, el("summary", {}, `${t.slots.length} ô nhập liệu`),
             el("table", { class: "slot-table" }, t.slots.map((s) => el("tr", {}, el("td", {}, s.name), el("td", { class: "muted" }, s.type, s.limit ? ` · ${s.limit}` : ""), el("td", { class: "faint" }, s.notes))))),
           el("details", {}, el("summary", {}, "Dữ liệu mẫu"), el("pre", { class: "log", style: { maxHeight: "200px" } }, JSON.stringify(t.defaults, null, 2))),
           preview ? el("button", { class: "btn ghost sm", style: { alignSelf: "flex-start" }, onclick: () => guard(() => api("POST", `/api/templates/${t.id}/preview`, { aspect }), "Đang render lại…").then(() => draw()) }, "↻ Render lại") : null,
+          t.generated ? el("button", { class: "btn ghost sm", style: { alignSelf: "flex-start" }, onclick: async () => {
+            if (!(await confirmBox(`Xoá template "${t.name}"? Dự án đang dùng nó sẽ không render lại được.`))) return;
+            await guard(() => api("DELETE", `/api/templates/${t.id}`), "Đã xoá template");
+            draw(true);
+          } }, "🗑 Xoá template") : null,
         ));
     }));
   }
@@ -291,6 +377,7 @@ async function templatesView(root) {
           draw();
         } }, "▶ Xem trước tất cả"),
         segBox)),
+    sampleCard,
     grid);
   return onJob((job, prev) => {
     if (job?.kind === "preview-template" && (!prev || prev.status !== job.status)) draw(!isLive(job));
@@ -429,6 +516,7 @@ async function settingsView(root) {
     function fillVoices() {
       const q = search.value.trim().toLowerCase();
       const hits = gVoices.filter((v) => !q || `${v.name} ${v.language}`.toLowerCase().includes(q));
+      if (hits.length && !hits.some((v) => v.id === form.GENMAX_VOICE)) pick(hits[0]);
       const langs = [...new Set(hits.map((v) => v.language))].sort((a, b) => Number(isEnglish(b)) - Number(isEnglish(a)) || a.localeCompare(b));
       clear(voicePick, langs.map((l) => el("optgroup", { label: l }, hits.filter((v) => v.language === l).map((v) => el("option", { value: v.id }, `${v.name}${v.gender ? ` (${v.gender})` : ""}`)))));
       voicePick.value = form.GENMAX_VOICE;
