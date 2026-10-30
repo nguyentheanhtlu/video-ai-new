@@ -11,9 +11,26 @@ export interface Slot {
   notes: string;
 }
 
+/** How a generated template tells a story, learned from its sample video. */
+export interface TemplateStyle {
+  structure?: string;
+  hook?: string;
+  tone?: string;
+  pacing?: string;
+  language?: string;
+  /** The sample's script skeleton, in order: new content is poured into these parts. */
+  outline?: { part: string; purpose?: string; pattern?: string; share?: number }[];
+  durationSec?: number;
+  avgShotSec?: number;
+  sourceUrl?: string;
+}
+
 export interface TemplateInfo {
   id: string;
   name: string;
+  /** Made from a sample video: covers every scene type and can be deleted. */
+  generated: boolean;
+  style?: TemplateStyle;
   /** Which scene types this template is meant for. */
   roles: ("hook" | "body" | "outro")[];
   role: string;
@@ -96,6 +113,10 @@ function rolesFor(id: string, roleText: string): TemplateInfo["roles"] {
 
 let cache: { at: number; list: TemplateInfo[] } | null = null;
 
+export function clearTemplateCache() {
+  cache = null;
+}
+
 export function listTemplates(): TemplateInfo[] {
   if (cache && Date.now() - cache.at < 5000) return cache.list;
   const sections = catalogSections();
@@ -104,10 +125,28 @@ export function listTemplates(): TemplateInfo[] {
     const dir = join(TEMPLATES_DIR, id);
     if (!statSync(dir).isDirectory() || !existsSync(join(dir, "index.html"))) continue;
     let name = id;
+    let meta: Record<string, unknown> = {};
     try {
-      name = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).name ?? id;
+      meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+      name = (meta.name as string) ?? id;
     } catch {
       /* optional */
+    }
+    if (meta.generated) {
+      list.push({
+        id,
+        name,
+        generated: true,
+        style: meta.style as TemplateStyle,
+        role: (meta.summary as string) ?? "",
+        bestFor: (meta.bestFor as string) ?? "",
+        roles: ["hook", "body", "outro"],
+        slots: (meta.slots as Slot[]) ?? [],
+        defaults: {},
+        aspects: (meta.aspects as string[]) ?? ["9:16"],
+        docs: "",
+      });
+      continue;
     }
     const section = sections.get(id) ?? "";
     let defaults = readDefaults(join(dir, ASPECT_FILES["9:16"]));
@@ -119,6 +158,7 @@ export function listTemplates(): TemplateInfo[] {
     list.push({
       id,
       name,
+      generated: false,
       role: stripMd(role),
       bestFor: stripMd(bestFor),
       roles: rolesFor(id, role),

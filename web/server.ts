@@ -3,8 +3,9 @@ config({ path: ".env.local", quiet: true });
 
 import express, { type NextFunction, type Request, type Response } from "express";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDurationSec } from "../src/assets/audio-tools.js";
@@ -14,7 +15,9 @@ import { planParallelism, planRender } from "../src/utils/machine.js";
 import { listEdgeVoices, startTtsServer, synthesize } from "../scripts/tts-server.js";
 import { articleFromText, fetchArticle, type Article } from "./lib/article.js";
 import { activeJobFor, bus, cancelJob, enqueue, getJob, listJobs, pump, type JobContext } from "./lib/jobs.js";
-import { generateScript, type GenerateOptions } from "./lib/llm.js";
+import { generateScript, scriptFromText, type GenerateOptions } from "./lib/llm.js";
+import { loadReference, ytDlpInstalled } from "./lib/reference.js";
+import { createTemplate, deleteGeneratedTemplate, entrySize, refineTemplate } from "./lib/template-gen.js";
 import {
   ensureFfmpegOnPath,
   HttpError,
@@ -103,6 +106,7 @@ app.get("/api/status", h(async () => {
     ffmpeg: which("ffmpeg"),
     ffprobe: which("ffprobe"),
     ffmpegDir,
+    ytDlp: ytDlpInstalled(),
     chrome: findChrome(),
     tts: { ok: ttsOk, mode: ttsOk ? ttsMode : "down", endpoint: TTS_ENDPOINT.origin },
     sfx: sfxCount(),
@@ -189,6 +193,7 @@ async function renderTemplateJob(ctx: JobContext, spec: RenderSpec) {
 }
 
 const SAMPLE_TITLE = "Đây là tiêu đề mẫu của bản tin: *từ khoá nổi bật* hiện bằng màu nhấn của kênh";
+const SAMPLE_VOICE = "Đây là phụ đề mẫu chạy theo lời đọc của video để xem thử kiểu chữ và vị trí trên khung hình.";
 
 /** Newest project that has downloaded photos — used as sample images for previews. */
 function sampleImageDir(): string | undefined {
@@ -215,15 +220,80 @@ function previewSpec(templateId: string, aspect: string, outputPath: string): Re
     durationSec: 5,
     extraVars: {
       __title: outro ? `Theo dõi *${getSetting("CHANNEL_NAME")}* để cập nhật tin nóng mỗi ngày` : SAMPLE_TITLE,
+      __voice: SAMPLE_VOICE,
+      __speech: 5,
+      __type: outro ? "outro" : "hook",
       __intro: true,
     },
   };
 }
 
+// Samples come from anyone's upload or link, so they stay in the temp folder.
+const UPLOAD_DIR = join(tmpdir(), "video-ai-reference");
+const UPLOAD_ID = /^[0-9a-f-]{36}$/;
+
+app.post("/api/templates/reference-upload", express.raw({ type: "application/octet-stream", limit: "300mb" }), h(async (req) => {
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "Chưa có file video");
+  await mkdir(UPLOAD_DIR, { recursive: true });
+  const uploadId = randomUUID();
+  await writeFile(join(UPLOAD_DIR, uploadId), req.body);
+  return { uploadId };
+}));
+
+app.post("/api/templates/from-reference", h(async (req) => {
+  const url = String(req.body?.url ?? "").trim();
+  const uploadId = String(req.body?.uploadId ?? "");
+  if (url && !/^https?:\/\//.test(url)) throw new HttpError(400, "Link phải bắt đầu bằng http:// hoặc https://");
+  if (!url && !UPLOAD_ID.test(uploadId)) throw new HttpError(400, "Nhập link hoặc tải file video mẫu lên");
+  const file = url ? undefined : join(UPLOAD_DIR, uploadId);
+  if (file && !existsSync(file)) throw new HttpError(400, "File video mẫu không còn trên máy, hãy tải lên lại");
+
+  const job = enqueue("reference-template", `Tạo template từ ${url || "file video mẫu"}`, async (ctx) => {
+    try {
+      ctx.progress(1, 4, "Phân tích video mẫu");
+      const reference = await loadReference({ url, file, name: String(req.body?.name ?? "") }, ctx.signal, ctx.log);
+      ctx.progress(2, 4, "AI dựng template");
+      const { id, design, turns } = await createTemplate(reference, ctx.log);
+      try {
+        ctx.progress(3, 4, "Render thử template");
+        const aspect = entrySize(reference).aspect;
+        await mkdir(PREVIEW_DIR, { recursive: true });
+        const outputPath = join(PREVIEW_DIR, `${id}-${aspect.replace(":", "x")}.mp4`);
+        const still = join(tmpdir(), `${id}.jpg`);
+        const renderPreview = async () => {
+          await renderTemplateJob(ctx, previewSpec(id, aspect, outputPath));
+          spawnSync("ffmpeg", ["-y", "-v", "error", "-ss", "3", "-i", outputPath, "-frames:v", "1", "-q:v", "4", still], { windowsHide: true });
+        };
+        await renderPreview();
+        ctx.progress(4, 4, "AI tinh chỉnh theo bản render");
+        await refineTemplate(id, design, turns, reference, (await readFile(still)).toString("base64"), ctx.log);
+        await renderPreview();
+        await rm(still, { force: true });
+      } catch (e) {
+        await deleteGeneratedTemplate(id);
+        throw e;
+      }
+      return { templateId: id };
+    } finally {
+      if (file) await rm(file, { force: true });
+    }
+  });
+  return { jobId: job.id };
+}));
+
+app.delete("/api/templates/:id", h(async (req) => {
+  const tpl = getTemplate(param(req, "id"));
+  if (!tpl) throw new HttpError(404, "Không có template này");
+  if (!tpl.generated) throw new HttpError(400, "Chỉ xoá được template tạo từ video mẫu");
+  await deleteGeneratedTemplate(tpl.id);
+  return { ok: true };
+}));
+
 app.post("/api/templates/:id/preview", h(async (req) => {
   const tpl = getTemplate(param(req, "id"));
   if (!tpl) throw new HttpError(404, "Không có template này");
   const aspect = req.body?.aspect === "16:9" ? "16:9" : "9:16";
+  if (!tpl.aspects.includes(aspect)) throw new HttpError(400, `Template này chỉ có khung ${tpl.aspects.join(", ")}`);
   await mkdir(PREVIEW_DIR, { recursive: true });
   const outputPath = join(PREVIEW_DIR, `${tpl.id}-${aspect.replace(":", "x")}.mp4`);
   const job = enqueue("preview-template", `Xem trước ${tpl.id} (${aspect})`, (ctx) =>
@@ -300,15 +370,35 @@ app.post("/api/projects", h(async (req) => {
   }
   if (mode !== "url" && mode !== "text") throw new HttpError(400, "mode phải là url | text | blank | import");
 
+  const template = body.templateId ? getTemplate(String(body.templateId)) : undefined;
+  if (body.templateId && !template) throw new HttpError(400, `Không có template "${body.templateId}"`);
   const opts: GenerateOptions = {
-    length: body.length === "short" ? "short" : "standard",
-    aspect,
+    length: body.length === "short" || body.length === "sample" ? body.length : "standard",
+    // A generated template only exists in the sample video's shape.
+    aspect: template ? (template.aspects[0] as typeof aspect) : aspect,
     channel: String(body.channel || getSetting("CHANNEL_NAME")),
     channelUrl: String(body.channelUrl || getSetting("CHANNEL_URL")),
     extraInstructions: body.extraInstructions ? String(body.extraInstructions) : undefined,
+    templateId: template?.id,
   };
   const label = mode === "url" ? String(body.url) : String(body.text ?? "").split("\n")[0].slice(0, 60);
   const job = enqueue("generate", `Viết kịch bản: ${label}`, async (ctx) => {
+    if (mode === "text" && body.keepScript) {
+      const text = String(body.text ?? "");
+      ctx.progress(1, 2, "Chia cảnh theo kịch bản của bạn");
+      const script = await scriptFromText(text, opts, ctx.log);
+      const slug = await allocateProject(script.metadata.title);
+      ctx.progress(2, 2, "Tìm ảnh cho từng cảnh");
+      try {
+        await writeImages(projectDir(slug), await fillSceneImages(projectDir(slug), script, [], ctx.log));
+      } catch (e) {
+        ctx.log(`Không tìm được ảnh (${(e as Error).message})`);
+      }
+      await createProject(script, { slug, sourceKind: mode, sourceText: text });
+      ctx.log(`✓ Đã tạo dự án ${slug}`);
+      if (body.autoRender) enqueuePipeline(slug);
+      return { slug };
+    }
     let article: Article;
     if (mode === "url") {
       ctx.progress(1, 4, "Tải bài báo");

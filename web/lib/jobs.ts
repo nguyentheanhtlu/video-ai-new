@@ -10,7 +10,7 @@ export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface Job {
   id: string;
-  kind: "pipeline" | "generate" | "render-scene" | "preview-template" | "sfx-download" | "sfx-filter";
+  kind: "pipeline" | "generate" | "render-scene" | "preview-template" | "reference-template" | "sfx-download" | "sfx-filter";
   title: string;
   slug?: string;
   /** Jobs sharing a lock never run together (same project / same output file). */
