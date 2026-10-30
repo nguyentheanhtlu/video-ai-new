@@ -229,7 +229,7 @@ function previewSpec(templateId: string, aspect: string, outputPath: string): Re
     aspect,
     outputPath,
     baseDir: dir,
-    meta: { title: samples().title, source: { url: "", domain: "vnexpress.net", image: null }, channel: getSetting("CHANNEL_NAME") },
+    meta: { title: samples().title, source: { url: "", domain: "local", image: null }, channel: getSetting("CHANNEL_NAME") },
     durationSec: 5,
     extraVars: {
       __title: outro ? samples().outro(getSetting("CHANNEL_NAME")) : samples().title,

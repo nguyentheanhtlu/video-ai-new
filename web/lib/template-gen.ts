@@ -58,6 +58,7 @@ Yêu cầu "css":
 - Chữ đang được đọc trong phụ đề và cụm từ khoá có class "hl"; hãy định dạng ".hl".
 - --brand và --hl là màu kênh của người dùng; dùng chúng cho logo, nút cta. Các màu phong cách khác lấy từ video mẫu.
 - Đảm bảo chữ dễ đọc trên ảnh bất kỳ (nền đặc, shadow hoặc viền). Chừa vùng an toàn: không đặt chữ quan trọng sát mép.
+- Chữ phải thoáng: letter-spacing không âm; không đặt display flex hoặc grid trực tiếp trên .headline và .subtitle (dùng phần tử bọc ngoài nếu cần căn giữa), vì flex làm mất dấu cách giữa các từ. Khung .headline phải đủ cao cho 3 dòng, cỡ chữ tối thiểu 44px.
 
 Cấm: thẻ script, style, link, img, iframe; thuộc tính onclick và các thuộc tính sự kiện; src, href; url() ra ngoài; @import.
 Không sao chép logo, watermark, tên kênh hay chữ có sẵn trong video mẫu; đây là khung cho nội dung của người dùng.`;
