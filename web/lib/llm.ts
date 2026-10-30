@@ -159,10 +159,55 @@ const GEMINI_FALLBACKS = ["gemini-2.5-flash", "gemini-flash-lite-latest"];
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Text models from best to worst: Pro before Flash, newest first, stable before
+ * preview. Specialised models (tts, image, lite, research…) don't match.
+ */
+export function rankGeminiModels(names: string[]): string[] {
+  const score = (name: string) => {
+    const m = name.match(/^gemini-(\d+(?:\.\d+)?)-(pro|flash)(-preview)?$/);
+    return m ? { name, pro: m[2] === "pro" ? 1 : 0, version: Number(m[1]), stable: m[3] ? 0 : 1 } : null;
+  };
+  return names
+    .map(score)
+    .filter((s) => s !== null)
+    .sort((a, b) => b.pro - a.pro || b.version - a.version || b.stable - a.stable)
+    .map((s) => s.name);
+}
+
+const GEMINI_LIST_TTL_MS = 60 * 60 * 1000;
+let geminiList: { key: string; at: number; names: string[] } | null = null;
+
+/** Models this key can use, best first; the fixed fallbacks if Google can't be asked. */
+export async function geminiModels(apiKey = getSetting("GEMINI_API_KEY")): Promise<string[]> {
+  if (geminiList?.key === apiKey && Date.now() - geminiList.at < GEMINI_LIST_TTL_MS) return geminiList.names;
+  try {
+    const res = await axios.get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {
+      headers: { "x-goog-api-key": apiKey },
+      timeout: 15000,
+    });
+    const usable = (res.data.models as { name: string; supportedGenerationMethods?: string[] }[])
+      .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+      .map((m) => m.name.replace(/^models\//, ""));
+    const names = rankGeminiModels(usable);
+    if (names.length) {
+      geminiList = { key: apiKey, at: Date.now(), names };
+      return names;
+    }
+  } catch {
+    /* fall through to the fixed list */
+  }
+  return GEMINI_FALLBACKS;
+}
+
 async function callGemini(system: string, turns: Turn[], log: (line: string) => void): Promise<string> {
   const apiKey = getSetting("GEMINI_API_KEY");
   if (!apiKey) throw new Error("Chưa nhập GEMINI_API_KEY trong Cài đặt (lấy miễn phí tại https://aistudio.google.com/apikey).");
-  const models = [...new Set([getSetting("GEMINI_MODEL"), ...GEMINI_FALLBACKS])];
+  const chosen = getSetting("GEMINI_MODEL");
+  const models = chosen === "auto"
+    ? [...new Set([...(await geminiModels(apiKey)).slice(0, 4), ...GEMINI_FALLBACKS])]
+    : [...new Set([chosen, ...GEMINI_FALLBACKS])];
+  if (chosen === "auto") log(`Tự chọn model Gemini: ${models[0]}`);
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: turns.map((t) => ({
@@ -198,9 +243,12 @@ async function callGemini(system: string, turns: Turn[], log: (line: string) => 
         return text;
       }
       lastError = `Gemini lỗi ${res.status} (${model}): ${res.data?.error?.message ?? JSON.stringify(res.data).slice(0, 300)}`;
-      if (!RETRYABLE.has(res.status)) throw new Error(lastError);
+      // Exhausted quota won't recover in seconds: go straight to the next model.
+      if (res.status === 429 && /quota/i.test(lastError)) break;
+      if (!RETRYABLE.has(res.status) && chosen !== "auto") throw new Error(lastError);
+      if (!RETRYABLE.has(res.status)) break;
     }
-    log(`  ${model} vẫn quá tải — chuyển sang model khác`);
+    log(`  ${model} không dùng được (${lastError.replace(/^Gemini lỗi /, "").slice(0, 120)}) — chuyển sang model khác`);
   }
   throw new Error(`${lastError}
 Tất cả model Gemini đều đang quá tải — thử lại sau ít phút, hoặc chuyển sang Claude trong Cài đặt.`);

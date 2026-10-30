@@ -48,7 +48,7 @@ export const DEFAULTS: Record<SettingKey, string> = {
   ANTHROPIC_API_KEY: "",
   CLAUDE_MODEL: "claude-opus-5-5",
   GEMINI_API_KEY: "",
-  GEMINI_MODEL: "gemini-flash-latest",
+  GEMINI_MODEL: "auto",
   CHANNEL_NAME: "AI Coding",
   CHANNEL_URL: "https://aicodingvn.vercel.app/",
   CHANNEL_HANDLE: "",

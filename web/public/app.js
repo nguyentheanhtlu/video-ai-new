@@ -559,13 +559,18 @@ async function settingsView(root) {
       .map(([v, l]) => el("option", { value: v }, l)));
   if (![...claudeModel.options].some((o) => o.value === form.CLAUDE_MODEL)) claudeModel.prepend(el("option", { value: form.CLAUDE_MODEL }, form.CLAUDE_MODEL));
   claudeModel.value = form.CLAUDE_MODEL;
+  const gemList = s.GEMINI_API_KEY_SET ? await api("GET", "/api/gemini/models").catch(() => []) : [];
+  const geminiModel = el("select", { onchange: (e) => (form.GEMINI_MODEL = e.target.value) },
+    el("option", { value: "auto" }, "Tự chọn model tốt nhất"),
+    [...new Set([form.GEMINI_MODEL, ...gemList])].filter((m) => m !== "auto").map((m) => el("option", { value: m }, m)));
+  geminiModel.value = form.GEMINI_MODEL;
   const drawProv = () => clear(provBox,
     el("div", { class: "seg", style: { marginBottom: "12px" } }, [["gemini", "Google Gemini"], ["claude", "Anthropic Claude"]].map(([v, l]) =>
       el("button", { class: provider === v ? "active" : "", onclick: () => { provider = v; form.LLM_PROVIDER = v; drawProv(); } }, l))),
     provider === "gemini"
       ? el("div", { class: "grid-2" },
         field("GEMINI_API_KEY", geminiKey, s.GEMINI_API_KEY_SET ? "đã lưu" : "chưa có"),
-        field("Model", bind("GEMINI_MODEL"), "vd gemini-flash-latest"),
+        field("Model", geminiModel, "tự chọn theo key"),
         el("p", { class: "small muted", style: { margin: 0, gridColumn: "1/-1" } }, "Lấy key miễn phí tại ", el("a", { href: "https://aistudio.google.com/apikey", target: "_blank" }, "aistudio.google.com/apikey"), "."))
       : el("div", { class: "grid-2" },
         field("ANTHROPIC_API_KEY", claudeKey, s.ANTHROPIC_API_KEY_SET ? "đã lưu" : "chưa có"),

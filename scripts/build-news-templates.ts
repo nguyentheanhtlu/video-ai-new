@@ -105,6 +105,7 @@ const RUNTIME = `
   var v = (window.__hyperframes && typeof window.__hyperframes.getVariables === "function")
     ? window.__hyperframes.getVariables() : {};
   var B = v.__brand || {};
+  var L = B.labels || { date: "NGÀY ĐĂNG", source: "NGUỒN", follow: "Theo dõi ngay" };
   var root = document.getElementById("root");
   var D = parseFloat(root.getAttribute("data-duration")) || 6;
   var LAND = root.clientWidth > root.clientHeight;
@@ -128,9 +129,9 @@ const RUNTIME = `
   /* ── fixed channel frame ── */
   logoInto($(".pill .logo"));
   $(".pill .name").textContent = B.name || "";
-  $(".date span").textContent = "NGÀY ĐĂNG: " + (B.date || "");
+  $(".date span").textContent = L.date + ": " + (B.date || "");
   var src = $(".source");
-  if (has(v.source_credit) || has(B.source)) src.textContent = "NGUỒN: " + (has(v.source_credit) ? v.source_credit : B.source);
+  if (has(v.source_credit) || has(B.source)) src.textContent = L.source + ": " + (has(v.source_credit) ? v.source_credit : B.source);
   else src.style.display = "none";
   var cap = $(".caption");
   if (has(v.caption)) cap.textContent = String(v.caption); else cap.style.display = "none";
@@ -275,7 +276,7 @@ const specs: Spec[] = [
     defaults: {
       image: "",
       headline: "",
-      cta: "Theo dõi ngay",
+      cta: "",
       __title: "Theo dõi *AI Coding* để cập nhật tin tức nóng hổi mỗi ngày",
     },
     js: `
@@ -293,7 +294,7 @@ const specs: Spec[] = [
   var big = wrap.querySelector(".big"); logoInto(big);
   var bigImg = big.querySelector("img"); if (bigImg) { bigImg.style.width = "100%"; bigImg.style.height = "100%"; bigImg.style.objectFit = "cover"; }
   var sp = big.querySelector("span"); if (sp) { sp.style.fontSize = "140px"; sp.style.color = "var(--brand)"; sp.style.fontWeight = "900"; }
-  var btn = wrap.querySelector(".btn"); btn.textContent = "🔔 " + (v.cta || "Theo dõi ngay");
+  var btn = wrap.querySelector(".btn"); btn.textContent = "🔔 " + (v.cta || L.follow);
   var ring = wrap.querySelector(".ring"), inner = wrap.querySelector(".inner");
   on(function (t) {
     var p = out3(t / .7);

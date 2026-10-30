@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { buildTemplateHtml, checkDesign, normalizeMotion } from "./template-shell.js";
+import { buildTemplateHtml, checkDesign, fontsInCss, normalizeMotion, replaceFonts } from "./template-shell.js";
 
 const html = '<div class="media"></div><h1 class="headline"></h1>';
+
+describe("Vietnamese fonts", () => {
+  const css = `.a { font-family: 'Bebas Neue', sans-serif; } .b { font-family: "Inter"; } .c { font-family: Georgia, serif; } .d { font-family: var(--f); }`;
+
+  it("finds the named families", () => {
+    expect(fontsInCss(css)).toEqual(["Bebas Neue", "Inter", "Georgia"]);
+  });
+
+  it("swaps only fonts without Vietnamese glyphs, keeping heavy ones heavy", () => {
+    const out = replaceFonts(css, (f) => f === "Inter");
+    expect(out).toContain("font-family: 'Oswald', 'Be Vietnam Pro', sans-serif");
+    expect(out).toContain("font-family: 'Inter', 'Be Vietnam Pro', sans-serif");
+    expect(out).toContain("font-family: 'Be Vietnam Pro', 'Be Vietnam Pro', sans-serif");
+    expect(out).not.toMatch(/Bebas|Georgia/);
+    expect(out).toContain("var(--f)");
+  });
+
+  it("rejects the font shorthand, which would slip past the check", () => {
+    expect(checkDesign({ css: ".a { font: 700 40px Impact; }", html }).join()).toMatch(/font:/);
+  });
+});
 
 describe("checkDesign", () => {
   it("accepts plain markup and CSS", () => {

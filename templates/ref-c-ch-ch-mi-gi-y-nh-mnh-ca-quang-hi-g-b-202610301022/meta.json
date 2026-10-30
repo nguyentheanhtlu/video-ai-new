@@ -1,0 +1,90 @@
+{
+  "id": "ref-c-ch-ch-mi-gi-y-nh-mnh-ca-quang-hi-g-b-202610301022",
+  "name": "C� CH�CH MI GI�Y NH MNH CA QUANG HI \"G�\" #B�ng�VitNam #YBVN",
+  "dynamicDuration": true,
+  "generated": true,
+  "summary": "Phong cách phóng sự thể thao kịch tính, phụ đề từng từ vàng viền đen đóng hộp gọn gàng ở trung tâm, tôn vinh khoảnh khắc danh thủ.",
+  "bestFor": "Kể chuyện danh thủ, khoảnh khắc lịch sử bóng đá, câu chuyện truyền cảm hứng thể thao",
+  "aspects": [
+    "9:16"
+  ],
+  "slots": [
+    {
+      "name": "image",
+      "type": "image",
+      "limit": "—",
+      "max": null,
+      "notes": "ảnh của scene, vd \"images/02.jpg\""
+    },
+    {
+      "name": "images",
+      "type": "image[]",
+      "limit": "≤3 items",
+      "max": 3,
+      "notes": "2–3 ảnh chiếu lần lượt trong scene"
+    },
+    {
+      "name": "caption",
+      "type": "string",
+      "limit": "≤40",
+      "max": 40,
+      "notes": "nhãn nhỏ, thường để trống"
+    },
+    {
+      "name": "headline",
+      "type": "string",
+      "limit": "≤120",
+      "max": 120,
+      "notes": "đổi tiêu đề riêng cho scene này, thường để trống"
+    },
+    {
+      "name": "cta",
+      "type": "string",
+      "limit": "≤24",
+      "max": 24,
+      "notes": "chữ nút kêu gọi ở scene outro"
+    }
+  ],
+  "style": {
+    "structure": "Hook bất ngờ gợi mở sự tương đồng -> Khởi đầu đầy biến cố, thất bại cay đắng -> Cơ hội thứ hai và sự hoài nghi bản thân -> Khoảnh khắc định mệnh bùng nổ -> Di sản để đời và tôn vinh",
+    "hook": "Mở đầu bằng phép đối sánh bất ngờ giữa một nhân vật quen thuộc hôm nay với một huyền thoại bị lãng quên trong quá khứ.",
+    "tone": "Hào hùng, xúc động, kịch tính và giàu chất tự sự",
+    "pacing": "Nhanh, dồn dập theo từng pha bóng, lắng đọng ở các nốt thăng trầm cảm xúc",
+    "language": "tiếng Việt",
+    "outline": [
+      {
+        "part": "Mở đầu nghịch lý",
+        "purpose": "Thu hút tò mò bằng chi tiết bất ngờ hoặc so sánh gây sốc",
+        "pattern": "Ngày xưa có một [nhân vật] cũng [đặc điểm], thậm chí còn [yếu tố bất ngờ] hơn [nhân vật hiện tại] bây giờ, nhưng lại nắm giữ [chiến tích/khoảnh khắc vĩ đại].",
+        "share": 0.15
+      },
+      {
+        "part": "Nốt trầm khởi đầu",
+        "purpose": "Kể về biến cố lớn đầu sự nghiệp khiến nhân vật suy sụp",
+        "pattern": "Ngày đó, anh [thành tích nổi bật ban đầu]. Thế nhưng [người có thẩm quyền] đã gạch tên anh khỏi [giải đấu quan trọng], khiến [cảm xúc tuyệt vọng].",
+        "share": 0.2
+      },
+      {
+        "part": "Nỗi hoài nghi & Điểm tựa",
+        "purpose": "Nhân vật chán nản muốn từ bỏ nhưng nhận được niềm tin từ người thầy",
+        "pattern": "Cảm thấy mình chỉ là [vị trí thừa thãi] cho [các đàn anh/đối thủ], anh đã chủ động [quyết định từ bỏ], nhưng [người thầy/huấn luyện viên] đã nói câu kinh điển: '[lời khẳng định đanh thép]'.",
+        "share": 0.25
+      },
+      {
+        "part": "Khoảnh khắc lịch sử",
+        "purpose": "Miêu tả pha bóng định mệnh làm nổ tung cầu trường",
+        "pattern": "Để rồi tại [thời điểm/trận cầu sinh tử], khi toàn đội [tình thế hiểm nghèo], anh được tung vào sân. Phút [thời gian], một pha [hành động ngoạn mục] và bùm, [kết quả bùng nổ] khiến hàng triệu người vỡ òa.",
+        "share": 0.25
+      },
+      {
+        "part": "Bất tử cùng thời gian",
+        "purpose": "Đúc kết giá trị và tôn vinh người hùng",
+        "pattern": "Cả sự nghiệp [thống kê khiêm tốn], nhưng đúng là thà một phút huy hoàng rồi chợt tắt. Chỉ cần một [khoảnh khắc đó] thôi, cái tên [nhân vật] đã đi thẳng vào ngôi đền huyền thoại.",
+        "share": 0.15
+      }
+    ],
+    "durationSec": 59,
+    "avgShotSec": 2.1,
+    "sourceUrl": "https://www.youtube.com/shorts/GlJFeHmWXmQ"
+  }
+}

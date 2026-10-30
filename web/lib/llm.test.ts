@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { splitIntoScenes } from "./llm.js";
+import { rankGeminiModels, splitIntoScenes } from "./llm.js";
+
+describe("rankGeminiModels", () => {
+  it("puts Pro first, newest first, and drops specialised models", () => {
+    const ranked = rankGeminiModels([
+      "gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-pro", "gemini-3.1-pro-preview",
+      "gemini-3.8-flash-tts", "gemini-3.5-flash-lite", "gemini-3-pro-image", "gemma-4-31b-it",
+    ]);
+    expect(ranked).toEqual(["gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-3.8-flash", "gemini-2.5-flash"]);
+  });
+
+  it("prefers a stable release over a preview of the same version", () => {
+    expect(rankGeminiModels(["gemini-3-flash-preview", "gemini-3-flash"])[0]).toBe("gemini-3-flash");
+  });
+});
 
 const words = (s: string) => s.replace(/\s+/g, " ").trim();
 

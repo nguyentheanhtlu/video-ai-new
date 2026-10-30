@@ -22,9 +22,16 @@ export interface Brand {
   date: string;
   /** Source domain of the article, for the "Nguồn: …" credit. */
   source: string;
+  /** Fixed on-screen words, in the language of the channel's scripts. */
+  labels: { date: string; source: string; follow: string };
 }
 
 const HEX = /^#[0-9a-f]{6}$/i;
+
+const LABELS = {
+  vi: { date: "NGÀY ĐĂNG", source: "NGUỒN", follow: "Theo dõi ngay" },
+  en: { date: "PUBLISHED", source: "SOURCE", follow: "Follow now" },
+};
 
 export function buildBrand(meta?: { source?: { domain?: string }; date?: string }, now = new Date()): Brand {
   const env = process.env;
@@ -43,5 +50,6 @@ export function buildBrand(meta?: { source?: { domain?: string }; date?: string 
     logo: existsSync(logoPath) ? fileToDataUri(logoPath) : "",
     date: meta?.date || `${p(now.getDate())}/${p(now.getMonth() + 1)}/${now.getFullYear()}`,
     source: domain.replace(/^www\./, ""),
+    labels: LABELS[env.SCRIPT_LANGUAGE === "vi" ? "vi" : "en"],
   };
 }

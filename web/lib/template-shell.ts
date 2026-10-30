@@ -60,7 +60,31 @@ export function checkDesign(d: Pick<TemplateDesign, "css" | "html">): string[] {
   if (/javascript:|@import|expression\(/i.test(all)) problems.push("Không được dùng javascript:, @import hay expression().");
   if (/url\(\s*['"]?(?!data:|#)/i.test(d.css) || /\b(src|href)\s*=/i.test(d.html)) problems.push("Không được tải tài nguyên ngoài (url(), src, href).");
   if (!/class\s*=\s*["'][^"']*\bmedia\b/.test(d.html)) problems.push('Thiếu phần tử class="media" để hiển thị ảnh.');
+  if (/(^|[;{\s])font\s*:/i.test(d.css)) problems.push("Không dùng thuộc tính gộp font:, hãy viết riêng font-family, font-size, font-weight.");
   return problems;
+}
+
+const GENERIC_FAMILIES = new Set(["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "inherit", "initial", "unset"]);
+const FALLBACK_FONT = "Be Vietnam Pro";
+const DISPLAY_FONT = "Oswald";
+
+/** Every font family the CSS names, without generic keywords. */
+export function fontsInCss(css: string): string[] {
+  const names = [...css.matchAll(/font-family\s*:\s*([^;}]+)/gi)].flatMap((m) =>
+    m[1].split(",").map((f) => f.trim().replace(/^['"]|['"]$/g, "")),
+  );
+  return [...new Set(names)].filter((f) => f && !GENERIC_FAMILIES.has(f.toLowerCase()) && !f.startsWith("var("));
+}
+
+/** Point every font without Vietnamese glyphs at one that has them, so accents never fall back mid-word. */
+export function replaceFonts(css: string, hasVietnamese: (font: string) => boolean): string {
+  return css.replace(/font-family\s*:\s*([^;}]+)/gi, (_, value: string) => {
+    const first = value.split(",")[0].trim().replace(/^['"]|['"]$/g, "");
+    if (first.startsWith("var(") || GENERIC_FAMILIES.has(first.toLowerCase())) return `font-family: ${value}`;
+    const heavy = /condensed|bebas|impact|anton|narrow|black|league/i.test(first) ? DISPLAY_FONT : FALLBACK_FONT;
+    const font = hasVietnamese(first) ? first : heavy;
+    return `font-family: '${font}', '${FALLBACK_FONT}', sans-serif`;
+  });
 }
 
 const FONT_RE = /^[A-Za-z0-9 ]{2,40}$/;
@@ -119,7 +143,7 @@ const RUNTIME = String.raw`
   text(".date", B.date);
   text(".source", has(v.source_credit) ? v.source_credit : B.source);
   text(".caption", v.caption);
-  text(".cta", has(v.cta) ? v.cta : "Follow");
+  text(".cta", v.__type !== "outro" ? "" : has(v.cta) ? v.cta : (B.labels || {}).follow || "Follow");
   var logo = $(".brand-logo");
   if (logo) {
     if (B.logo) { var li = document.createElement("img"); li.src = B.logo; li.style.cssText = "width:100%;height:100%;object-fit:cover"; logo.appendChild(li); }
@@ -257,7 +281,7 @@ export function buildTemplateHtml(d: TemplateDesign, size: { width: number; heig
   const vars = JSON.stringify(VARIABLES).replace(/'/g, "&#39;");
   const motion = JSON.stringify(d.motion).replace(/</g, "\\u003c");
   return `<!DOCTYPE html>
-<html lang="vi">
+<html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=${size.width}, height=${size.height}" />
@@ -268,6 +292,9 @@ html, body, #root { width: ${size.width}px; height: ${size.height}px; }
 ${BASE_CSS}
 /* AI design */
 ${d.css}
+/* Stacked Vietnamese accents (Ệ, Ẩ) need the room, whatever the design chose. */
+.headline, .subtitle { line-height: 1.3 !important; }
+.headline { padding-top: .1em; }
 </style>
 </head>
 <body>
