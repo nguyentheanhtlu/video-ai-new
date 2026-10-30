@@ -3,6 +3,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDurationSec } from "../../src/assets/audio-tools.js";
+import { ensureYtDlpOnPath } from "../../src/utils/ffmpeg-path.js";
 
 /** What the AI gets to see of a sample video. */
 export interface ReferenceVideo {
@@ -22,11 +23,16 @@ export interface ReferenceVideo {
 const MAX_FRAMES = 12;
 const MAX_DOWNLOAD = "300M";
 
-export const ytDlpInstalled = () => spawnSync("yt-dlp", ["--version"], { windowsHide: true }).status === 0;
+export function ytDlpInstalled(): boolean {
+  ensureYtDlpOnPath();
+  return spawnSync("yt-dlp", ["--version"], { windowsHide: true }).status === 0;
+}
 
 function run(cmd: string, args: string[], signal: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, { windowsHide: true, signal });
+    // Windows defaults to a legacy code page, which garbles Vietnamese titles.
+    const proc = spawn(cmd, args, { windowsHide: true, signal, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } });
+    proc.stdout.setEncoding("utf8");
     let out = "";
     let err = "";
     proc.stdout.on("data", (c) => (out += c));
@@ -47,27 +53,39 @@ export function vttToText(vtt: string): string {
   return lines.join(" ");
 }
 
-async function download(url: string, dir: string, signal: AbortSignal) {
+/** Last line of yt-dlp's output, without the hashtags social videos pad their titles with. */
+export function cleanTitle(output: string): string {
+  const line = output.trim().split(/\r?\n/).pop() ?? "";
+  return line.replace(/#\S+/g, "").replace(/\s+/g, " ").trim();
+}
+
+async function download(url: string, dir: string, signal: AbortSignal, log: (line: string) => void) {
   if (!ytDlpInstalled()) {
     throw new Error("Máy chưa có yt-dlp nên chưa tải được link. Chạy: winget install yt-dlp.yt-dlp rồi khởi động lại web, hoặc tải file video mẫu lên trực tiếp.");
   }
   const title = await run("yt-dlp", [
-    "--no-playlist", "--no-warnings", "--no-progress",
+    "--encoding", "utf-8", "--no-playlist", "--no-warnings", "--no-progress",
     "--max-filesize", MAX_DOWNLOAD,
     "-f", "bv*[height<=720]+ba/b[height<=720]/b",
     "--merge-output-format", "mp4",
-    "--write-auto-subs", "--write-subs", "--sub-format", "vtt", "--sub-langs", "vi.*,en.*",
     "-o", join(dir, "ref.%(ext)s"),
     "--print", "after_move:title",
     "--", url,
   ], signal);
+  // Subtitles only improve the analysis: sites rate-limit them, and that mustn't lose the video.
+  await run("yt-dlp", [
+    "--encoding", "utf-8", "--no-playlist", "--no-warnings", "--no-progress", "--skip-download",
+    "--write-auto-subs", "--write-subs", "--sub-format", "vtt", "--sub-langs", "vi,en,vi-orig,en-orig",
+    "-o", join(dir, "ref.%(ext)s"),
+    "--", url,
+  ], signal).catch((e) => log(`Không lấy được phụ đề, phân tích bằng hình ảnh (${(e as Error).message.slice(-120)})`));
   const files = await readdir(dir);
   const video = files.find((f) => f.endsWith(".mp4"));
   if (!video) throw new Error("yt-dlp không tạo ra file video.");
   const subs = files.find((f) => f.endsWith(".vtt"));
   return {
     file: join(dir, video),
-    title: title.trim().split(/\r?\n/).pop() ?? "",
+    title: cleanTitle(title),
     transcript: subs ? vttToText(await readFile(join(dir, subs), "utf8")) : "",
   };
 }
@@ -109,7 +127,7 @@ export async function loadReference(
     let transcript = "";
     if (!file) {
       log(`Tải video mẫu: ${source.url}`);
-      ({ file, title, transcript } = await download(source.url!, dir, signal));
+      ({ file, title, transcript } = await download(source.url!, dir, signal, log));
     }
     const durationSec = await getDurationSec(file);
     const size = await probeSize(file, signal);

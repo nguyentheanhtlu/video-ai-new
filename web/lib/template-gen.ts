@@ -5,7 +5,7 @@ import { toSlug } from "../../src/utils/slug.js";
 import { generateJson, type Turn } from "./llm.js";
 import { TEMPLATES_DIR } from "./paths.js";
 import type { ReferenceVideo } from "./reference.js";
-import { buildTemplateHtml, checkDesign, normalizeMotion, TRANSITIONS, type Motion } from "./template-shell.js";
+import { buildTemplateHtml, checkDesign, fontsInCss, normalizeMotion, replaceFonts, TRANSITIONS, type Motion } from "./template-shell.js";
 import { clearTemplateCache, type TemplateStyle } from "./templates.js";
 
 const SLOTS = [
@@ -22,7 +22,6 @@ interface DesignReply {
   bestFor?: string;
   style?: Partial<TemplateStyle>;
   motion?: Partial<Motion>;
-  fonts?: string[];
   css?: string;
   html?: string;
 }
@@ -31,11 +30,11 @@ const CONTRACT = `Bạn là nhà thiết kế motion graphics. Bạn dựng lạ
 
 Chỉ trả về MỘT object JSON:
 {
+  "name": "tên ngắn nêu đúng loại video mẫu theo nội dung thật, vd: Quảng cáo thuốc thú y, Bản tin bóng đá",
   "summary": "mô tả phong cách trong 1 câu",
   "bestFor": "loại nội dung hợp với mẫu",
   "style": { "structure": "...", "hook": "...", "tone": "...", "pacing": "...", "language": "ngôn ngữ của video mẫu", "outline": [{ "part": "tên đoạn", "purpose": "đoạn này làm gì", "pattern": "mẫu câu có chỗ trống, vd: Bạn có biết [sự thật gây sốc] không?", "share": phần trăm thời lượng }] },
   "motion": { "photoHold": giây, "transitions": [${TRANSITIONS.map((t) => `"${t}"`).join(", ")}], "kenBurns": 0..1, "headlineIn": "rise|pop|none", "subtitleWords": 0..8, "subtitleHighlight": true|false },
-  "fonts": ["tên font Google Fonts có hỗ trợ tiếng Việt"],
   "css": "...",
   "html": "..."
 }
@@ -54,6 +53,7 @@ Yêu cầu "html": chỉ các thẻ div/span/h1/h2/p, đặt trực tiếp bên 
 Có thể thêm phần tử trang trí (khung, dải màu, gạch chân) bằng class riêng.
 
 Yêu cầu "css":
+- Font: chỉ dùng font-family là một trong: Be Vietnam Pro, Oswald, Anton, Barlow Condensed, Roboto Condensed, Montserrat, Inter, Lexend, League Spartan, Saira Condensed, Bangers, Fjalla One. Viết riêng font-family, font-size, font-weight, không dùng thuộc tính gộp "font:".
 - #root có class is-hook, is-body hoặc is-outro theo loại scene; có thể đổi bố cục theo đó. Scene outro phải có điểm nhấn kêu gọi theo dõi.
 - Chữ đang được đọc trong phụ đề và cụm từ khoá có class "hl"; hãy định dạng ".hl".
 - --brand và --hl là màu kênh của người dùng; dùng chúng cho logo, nút cta. Các màu phong cách khác lấy từ video mẫu.
@@ -94,18 +94,51 @@ async function requestDesign(turns: Turn[], log: (line: string) => void): Promis
 export const entrySize = (r: Pick<ReferenceVideo, "width" | "height">) =>
   r.width >= r.height ? { width: 1920, height: 1080, aspect: "16:9" as const } : { width: 1080, height: 1920, aspect: "9:16" as const };
 
-/** A template is named after its sample; the AI's own name is only a last resort. */
-const templateName = (d: DesignReply, r: ReferenceVideo) => r.title.trim() || d.name?.trim() || "";
+/** Uploads and reposts often carry a generated id such as "fdaee947 e935 4cd8" instead of a title. */
+export const isRealTitle = (title: string) => {
+  const t = title.trim();
+  return t.length > 0 && !/^[0-9a-f]{8}[\s_-]+[0-9a-f]{4}\b/i.test(t) && !/^[\d\s_-]+$/.test(t);
+};
+
+/** A template is named after its sample; the AI's name is for samples without a usable title. */
+const templateName = (d: DesignReply, r: ReferenceVideo) => (isRealTitle(r.title) ? r.title.trim() : d.name?.trim() || "");
+
+const FONT_CHECK_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36";
+const fontSupport = new Map<string, boolean>();
+
+/** Google Fonts lists a "vietnamese" subset for fonts with the glyphs; unknown fonts answer 400. */
+async function hasVietnamese(font: string): Promise<boolean> {
+  const known = fontSupport.get(font);
+  if (known !== undefined) return known;
+  let supported = false;
+  try {
+    const res = await fetch(`https://fonts.googleapis.com/css2?family=${encodeURIComponent(font)}`, {
+      headers: { "User-Agent": FONT_CHECK_UA },
+      signal: AbortSignal.timeout(10_000),
+    });
+    supported = res.ok && (await res.text()).includes("/* vietnamese */");
+  } catch {
+    return false; // Unreachable: use the safe font now, but ask again next time.
+  }
+  fontSupport.set(font, supported);
+  return supported;
+}
+
+/** Keep only fonts that can draw Vietnamese; returns the rewritten CSS and the fonts to load. */
+export async function vietnameseSafeCss(css: string) {
+  const fonts = fontsInCss(css);
+  const checks = await Promise.all(fonts.map(async (f) => [f, await hasVietnamese(f)] as const));
+  const ok = new Set(checks.filter(([, v]) => v).map(([f]) => f));
+  const safe = replaceFonts(css, (f) => ok.has(f));
+  return { css: safe, fonts: fontsInCss(safe) };
+}
 
 async function writeTemplate(id: string, d: DesignReply, r: ReferenceVideo) {
   const { aspect, ...size } = entrySize(r);
   const dir = join(TEMPLATES_DIR, id);
   const name = templateName(d, r) || id;
-  const html = buildTemplateHtml(
-    { fonts: d.fonts ?? [], css: d.css!, html: d.html!, motion: normalizeMotion(d.motion) },
-    size,
-    name,
-  );
+  const { css, fonts } = await vietnameseSafeCss(d.css!);
+  const html = buildTemplateHtml({ fonts, css, html: d.html!, motion: normalizeMotion(d.motion) }, size, name);
   await mkdir(join(dir, "compositions"), { recursive: true });
   await writeFile(join(dir, "index.html"), html);
   if (aspect === "9:16") await writeFile(join(dir, "compositions", "portrait.html"), html);

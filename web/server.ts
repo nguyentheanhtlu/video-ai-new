@@ -15,7 +15,7 @@ import { planParallelism, planRender } from "../src/utils/machine.js";
 import { listEdgeVoices, startTtsServer, synthesize } from "../scripts/tts-server.js";
 import { articleFromText, fetchArticle, type Article } from "./lib/article.js";
 import { activeJobFor, bus, cancelJob, enqueue, getJob, listJobs, pump, type JobContext } from "./lib/jobs.js";
-import { generateScript, scriptFromText, type GenerateOptions } from "./lib/llm.js";
+import { geminiModels, generateScript, scriptFromText, type GenerateOptions } from "./lib/llm.js";
 import { loadReference, ytDlpInstalled } from "./lib/reference.js";
 import { createTemplate, deleteGeneratedTemplate, entrySize, refineTemplate } from "./lib/template-gen.js";
 import {
@@ -130,6 +130,8 @@ app.put("/api/settings", h((req) => {
   return publicSettings();
 }));
 
+app.get("/api/gemini/models", h(() => geminiModels()));
+
 let voicesCache: unknown[] | null = null;
 app.get("/api/voices", h(async () => {
   if (!voicesCache) {
@@ -192,8 +194,19 @@ async function renderTemplateJob(ctx: JobContext, spec: RenderSpec) {
   await ctx.runTs(["web/tasks/render-template.ts", specFile]);
 }
 
-const SAMPLE_TITLE = "Đây là tiêu đề mẫu của bản tin: *từ khoá nổi bật* hiện bằng màu nhấn của kênh";
-const SAMPLE_VOICE = "Đây là phụ đề mẫu chạy theo lời đọc của video để xem thử kiểu chữ và vị trí trên khung hình.";
+const SAMPLES = {
+  vi: {
+    title: "Đây là tiêu đề mẫu của bản tin: *từ khoá nổi bật* hiện bằng màu nhấn của kênh",
+    voice: "Đây là phụ đề mẫu chạy theo lời đọc của video để xem thử kiểu chữ và vị trí trên khung hình.",
+    outro: (channel: string) => `Theo dõi *${channel}* để cập nhật tin nóng mỗi ngày`,
+  },
+  en: {
+    title: "This is a sample news headline: *key phrase* shown in the channel's accent colour",
+    voice: "This is a sample subtitle that follows the narration to preview the type and its position on screen.",
+    outro: (channel: string) => `Follow *${channel}* for the latest news every day`,
+  },
+};
+const samples = () => SAMPLES[getSetting("SCRIPT_LANGUAGE") === "vi" ? "vi" : "en"];
 
 /** Newest project that has downloaded photos — used as sample images for previews. */
 function sampleImageDir(): string | undefined {
@@ -216,11 +229,11 @@ function previewSpec(templateId: string, aspect: string, outputPath: string): Re
     aspect,
     outputPath,
     baseDir: dir,
-    meta: { title: SAMPLE_TITLE, source: { url: "", domain: "vnexpress.net", image: null }, channel: getSetting("CHANNEL_NAME") },
+    meta: { title: samples().title, source: { url: "", domain: "vnexpress.net", image: null }, channel: getSetting("CHANNEL_NAME") },
     durationSec: 5,
     extraVars: {
-      __title: outro ? `Theo dõi *${getSetting("CHANNEL_NAME")}* để cập nhật tin nóng mỗi ngày` : SAMPLE_TITLE,
-      __voice: SAMPLE_VOICE,
+      __title: outro ? samples().outro(getSetting("CHANNEL_NAME")) : samples().title,
+      __voice: samples().voice,
       __speech: 5,
       __type: outro ? "outro" : "hook",
       __intro: true,

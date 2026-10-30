@@ -7,6 +7,19 @@ import { delimiter, join } from "node:path";
  * build in %LOCALAPPDATA%\ffmpeg\<build>\bin and prepend it for this process and
  * its children. Returns the directory in use, or null if none was found.
  */
+/**
+ * Same idea for yt-dlp: winget puts it in its own folder under Packages, which a
+ * process started before the install doesn't have on PATH.
+ */
+export function ensureYtDlpOnPath(): void {
+  const exe = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  if ((process.env.PATH ?? "").split(delimiter).some((d) => d && existsSync(join(d, exe)))) return;
+  const packages = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Packages") : null;
+  if (!packages || !existsSync(packages)) return;
+  const dir = readdirSync(packages).map((d) => join(packages, d)).find((d) => existsSync(join(d, exe)));
+  if (dir) process.env.PATH = `${dir}${delimiter}${process.env.PATH ?? ""}`;
+}
+
 export function ensureFfmpegOnPath(): string | null {
   const exe = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
   const dirs = (process.env.PATH ?? "").split(delimiter);
