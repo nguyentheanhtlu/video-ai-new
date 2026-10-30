@@ -155,11 +155,32 @@ const RUNTIME = String.raw`
 
   /* headline: *phrase* is highlighted; shrinks to fit its box */
   var H = $(".headline");
+  /* flex and grid drop the spaces between words, and negative tracking runs letters together */
+  function readable(el) {
+    if (!el) return;
+    var cs = getComputedStyle(el);
+    if (/flex|grid/.test(cs.display)) {
+      if (cs.justifyContent === "center") el.style.textAlign = "center";
+      el.style.display = /inline/.test(cs.display) ? "inline-block" : "block";
+    }
+    if (parseFloat(cs.letterSpacing) < 0) el.style.letterSpacing = "0";
+    el.style.whiteSpace = "normal";
+    el.style.wordSpacing = ".08em";
+    el.style.overflowWrap = "break-word";
+  }
+  [H, $(".subtitle"), $(".caption"), $(".cta"), $(".source"), $(".date"), $(".brand-name"), $(".brand-handle")].forEach(readable);
+  var MIN_TEXT = 26;
+  /* shrink until every word is inside the box; a box too small even then grows, so no text is ever cut */
   function fitHeadline() {
     if (!H) return;
     H.style.fontSize = "";
-    var size = parseFloat(getComputedStyle(H).fontSize), min = size * .45;
-    while (size > min && H.scrollHeight > H.clientHeight + 2) { size -= 2; H.style.fontSize = size + "px"; }
+    H.style.height = "";
+    H.style.overflow = "hidden";
+    var size = parseFloat(getComputedStyle(H).fontSize);
+    var over = function () { return H.scrollHeight > H.clientHeight + 2 || H.scrollWidth > H.clientWidth + 2; };
+    while (size > MIN_TEXT && over()) { size -= 2; H.style.fontSize = size + "px"; }
+    if (over()) H.style.height = "auto";
+    H.style.overflow = "visible";
   }
   if (H) {
     String(has(v.headline) ? v.headline : v.__title || "").split(/(\*[^*]+\*)/).forEach(function (part) {
@@ -201,6 +222,12 @@ const RUNTIME = String.raw`
         spans = spoken.slice(chunk * M.subtitleWords, (chunk + 1) * M.subtitleWords).map(function (word) {
           var s = document.createElement("span"); s.textContent = word + " "; sub.appendChild(s); return s;
         });
+        /* a long word or chunk must stay on screen, whole */
+        var maxW = root.clientWidth - 80, maxH = root.clientHeight * .3;
+        sub.style.fontSize = "";
+        sub.style.maxWidth = maxW + "px";
+        var size = parseFloat(getComputedStyle(sub).fontSize);
+        while (size > MIN_TEXT && (sub.offsetWidth > maxW || sub.scrollWidth > sub.clientWidth + 2 || sub.offsetHeight > maxH)) { size -= 2; sub.style.fontSize = size + "px"; }
       }
       var pop = out3((t - startOf(chunk * M.subtitleWords)) / .12);
       sub.style.opacity = t > SPEECH + .1 ? 0 : 1;
@@ -294,7 +321,8 @@ ${BASE_CSS}
 ${d.css}
 /* Stacked Vietnamese accents (Ệ, Ẩ) need the room, whatever the design chose. */
 .headline, .subtitle { line-height: 1.3 !important; }
-.headline { padding-top: .1em; }
+.headline { padding-top: .1em; padding-bottom: .12em; }
+.subtitle { overflow: visible !important; }
 </style>
 </head>
 <body>
