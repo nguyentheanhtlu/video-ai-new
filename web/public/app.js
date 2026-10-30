@@ -379,15 +379,87 @@ async function settingsView(root) {
     form.EDGE_RATE = `${v >= 0 ? "+" : ""}${v}%`;
     rateLabel.textContent = form.EDGE_RATE;
   } });
-  const sample = el("input", { type: "text", value: "Xin chào, đây là bản tin công nghệ mới nhất hôm nay." });
+  const sample = el("input", { type: "text", value: form.SCRIPT_LANGUAGE === "vi" ? "Xin chào, đây là bản tin công nghệ mới nhất hôm nay." : "Hello, here is today's latest technology news." });
   const tryBtn = el("button", { class: "btn", onclick: async (e) => {
     const b = e.currentTarget;
     b.disabled = true;
     try {
-      const blob = await api("POST", "/api/tts/preview", { text: sample.value, voice: form.EDGE_VOICE, rate: form.EDGE_RATE });
+      const genmax = useGenmax() ? { provider: form.GENMAX_PROVIDER, voiceId: form.GENMAX_VOICE, model: form.GENMAX_MODEL, language: form.GENMAX_LANGUAGE } : null;
+      const blob = await api("POST", "/api/tts/preview", { text: sample.value, voice: form.EDGE_VOICE, rate: form.EDGE_RATE, genmax });
       new Audio(URL.createObjectURL(blob)).play();
     } catch (err) { toast(err.message, "bad"); } finally { b.disabled = false; }
   } }, "🔊 Nghe thử");
+
+  // Genmax: entering the key is the only setup a new machine needs.
+  let keySaved = !!s.GENMAX_API_KEY_SET;
+  const useGenmax = () => keySaved && form.TTS_ENGINE !== "edge";
+  const genmaxBox = el("div", { class: "stack" });
+  const edgeBox = el("div");
+  const genmaxKey = el("input", { type: "password", placeholder: keySaved ? "•••••• (đã lưu — nhập để thay)" : "sk_…", oninput: (e) => (form.GENMAX_API_KEY = e.target.value) });
+  const saveKeyBtn = el("button", { class: "btn", onclick: async () => {
+    if (!form.GENMAX_API_KEY?.trim()) return toast("Chưa nhập key", "warn");
+    await guard(() => api("PUT", "/api/settings", { GENMAX_API_KEY: form.GENMAX_API_KEY }), "Đã lưu key Genmax");
+    delete form.GENMAX_API_KEY;
+    genmaxKey.value = "";
+    genmaxKey.placeholder = "•••••• (đã lưu — nhập để thay)";
+    keySaved = true;
+    drawEngine();
+  } }, "Lưu key & tải giọng");
+
+  async function drawGenmax() {
+    const provider = form.GENMAX_PROVIDER;
+    const keyRow = field("GENMAX_API_KEY", el("div", { class: "row" }, el("div", { class: "grow" }, genmaxKey), saveKeyBtn), keySaved ? "đã lưu" : "chưa có");
+    const hint = el("p", { class: "small muted", style: { margin: 0 } }, "Lấy key tại ", el("a", { href: "https://genmax.io/docs", target: "_blank" }, "genmax.io/docs"), ". Key chỉ lưu trên máy này, trong .env.local.");
+    if (!keySaved) return clear(genmaxBox, keyRow, hint, el("div", { class: "callout warn small" }, "Chưa có key nên đang đọc bằng Edge TTS. Nhập key để dùng Genmax."));
+    clear(genmaxBox, keyRow, hint, el("div", { class: "muted small" }, "Đang tải danh sách giọng…"));
+    let catalog;
+    try {
+      catalog = await api("GET", `/api/genmax/catalog?provider=${provider}`);
+    } catch (err) {
+      return clear(genmaxBox, keyRow, hint, el("div", { class: "callout warn small" }, `Không tải được giọng: ${err.message}`));
+    }
+    if (form.GENMAX_PROVIDER !== provider) return; // switched again while loading
+    const { voices: gVoices, models } = catalog;
+
+    const langInput = bind("GENMAX_LANGUAGE");
+    const pick = (v) => { form.GENMAX_VOICE = v.id; form.GENMAX_LANGUAGE = v.language; langInput.value = v.language; };
+    const search = el("input", { type: "text", placeholder: `Tìm trong ${gVoices.length} giọng…`, oninput: () => fillVoices() });
+    const voicePick = el("select", { onchange: (e) => pick(gVoices.find((v) => v.id === e.target.value)) });
+    const isEnglish = (l) => l === "English" || l === "en";
+    function fillVoices() {
+      const q = search.value.trim().toLowerCase();
+      const hits = gVoices.filter((v) => !q || `${v.name} ${v.language}`.toLowerCase().includes(q));
+      const langs = [...new Set(hits.map((v) => v.language))].sort((a, b) => Number(isEnglish(b)) - Number(isEnglish(a)) || a.localeCompare(b));
+      clear(voicePick, langs.map((l) => el("optgroup", { label: l }, hits.filter((v) => v.language === l).map((v) => el("option", { value: v.id }, `${v.name}${v.gender ? ` (${v.gender})` : ""}`)))));
+      voicePick.value = form.GENMAX_VOICE;
+    }
+    if (!gVoices.some((v) => v.id === form.GENMAX_VOICE)) pick(gVoices.find((v) => isEnglish(v.language)) ?? gVoices[0]);
+    fillVoices();
+
+    if (!models.some((m) => m.id === form.GENMAX_MODEL)) form.GENMAX_MODEL = catalog.defaultModel;
+    const modelPick = el("select", { onchange: (e) => (form.GENMAX_MODEL = e.target.value) }, models.map((m) => el("option", { value: m.id }, m.name)));
+    modelPick.value = form.GENMAX_MODEL;
+
+    clear(genmaxBox, keyRow, hint,
+      el("div", { class: "seg" }, [["minimax", "MiniMax"], ["capcut", "CapCut"], ["elevenlabs", "ElevenLabs"]].map(([v, l]) =>
+        el("button", { class: provider === v ? "active" : "", onclick: () => { form.GENMAX_PROVIDER = v; drawGenmax(); } }, l))),
+      el("div", { class: "grid-2" },
+        field("Tìm giọng", search),
+        field("Giọng", voicePick, `${gVoices.length} giọng`),
+        field("Model", modelPick),
+        field("Ngôn ngữ đọc", langInput, "tự điền theo giọng")));
+  }
+
+  function drawEngine() {
+    clear(engineBox,
+      el("div", { class: "seg" }, [["genmax", "Genmax"], ["edge", "Edge TTS (miễn phí)"]].map(([v, l]) =>
+        el("button", { class: (form.TTS_ENGINE === "edge") === (v === "edge") ? "active" : "", onclick: () => { form.TTS_ENGINE = v; drawEngine(); } }, l))),
+      form.TTS_ENGINE === "edge" ? edgeBox : genmaxBox);
+    if (form.TTS_ENGINE !== "edge") drawGenmax();
+  }
+  const engineBox = el("div", { class: "stack" });
+  clear(edgeBox, field("Giọng", voiceSel));
+  drawEngine();
 
   // LLM
   let provider = form.LLM_PROVIDER === "claude" ? "claude" : "gemini";
@@ -497,6 +569,12 @@ async function settingsView(root) {
     await guard(() => api("PUT", "/api/settings", patch), "Đã lưu cài đặt vào .env.local");
     geminiKey.value = "";
     claudeKey.value = "";
+    if (form.GENMAX_API_KEY) {
+      delete form.GENMAX_API_KEY;
+      genmaxKey.value = "";
+      keySaved = true;
+      drawEngine();
+    }
     refreshStatus();
   }
 
@@ -509,12 +587,18 @@ async function settingsView(root) {
       el("button", { class: "btn primary", onclick: saveAll }, "💾 Lưu cài đặt")),
     el("div", { class: "stack" },
       el("div", { class: "card stack" },
-        el("h2", {}, "🎙 Giọng đọc (Edge TTS)"),
+        el("h2", {}, "🎙 Giọng đọc"),
         st.tts.mode === "external" ? el("div", { class: "callout warn small" },
           "Đang dùng server giọng đọc chạy riêng (npm run tts:server) nên đổi giọng ở đây sẽ KHÔNG áp dụng khi render. Tắt terminal tts:server rồi khởi động lại web — web tự chạy server giọng đọc.") : null,
+        engineBox,
         el("div", { class: "grid-2" },
-          field("Giọng", voiceSel),
-          field("Tốc độ", el("div", { class: "row" }, rate, rateLabel))),
+          field("Tốc độ", el("div", { class: "row" }, rate, rateLabel)),
+          field("Ngôn ngữ kịch bản AI", (() => {
+            const sel = el("select", { onchange: (e) => (form.SCRIPT_LANGUAGE = e.target.value) },
+              el("option", { value: "en" }, "Tiếng Anh"), el("option", { value: "vi" }, "Tiếng Việt"));
+            sel.value = form.SCRIPT_LANGUAGE;
+            return sel;
+          })(), "nên khớp ngôn ngữ của giọng")),
         el("div", { class: "row" }, el("div", { class: "grow" }, sample), tryBtn),
         el("p", { class: "small muted", style: { margin: 0 } }, "Đổi giọng chỉ áp dụng cho các scene chưa tạo giọng. Với dự án cũ: mở dự án → Cache → \"Tạo lại toàn bộ giọng\"."),
         field("Hiệu ứng âm thanh (SFX)", (() => {

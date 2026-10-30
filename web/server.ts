@@ -8,6 +8,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDurationSec } from "../src/assets/audio-tools.js";
+import { genmaxCatalog, genmaxFromEnv, GENMAX_PROVIDERS, type GenmaxProvider } from "../src/tts/genmax.js";
 import { defaultPlayback, indexSfxLibrary, pickSfxForScene } from "../src/assets/sfx-selector.js";
 import { planParallelism, planRender } from "../src/utils/machine.js";
 import { listEdgeVoices, startTtsServer, synthesize } from "../scripts/tts-server.js";
@@ -47,7 +48,7 @@ import { getTemplate, listTemplates } from "./lib/templates.js";
 
 const PORT = Number(process.env.WEB_PORT ?? 3210);
 const TTS_ENDPOINT = new URL(process.env.OMNIVOICE_ENDPOINT ?? "http://127.0.0.1:8123");
-const voiceSettings = () => ({ voice: getSetting("EDGE_VOICE"), rate: getSetting("EDGE_RATE") });
+const voiceSettings = () => ({ voice: getSetting("EDGE_VOICE"), rate: getSetting("EDGE_RATE"), genmax: genmaxFromEnv() });
 
 const ffmpegDir = ensureFfmpegOnPath();
 let ttsMode: "embedded" | "external" | "down" = "down";
@@ -137,6 +138,14 @@ app.get("/api/voices", h(async () => {
   return voicesCache;
 }));
 
+const genmaxCache = new Map<GenmaxProvider, Awaited<ReturnType<typeof genmaxCatalog>>>();
+app.get("/api/genmax/catalog", h(async (req) => {
+  const provider = String(req.query.provider) as GenmaxProvider;
+  if (!GENMAX_PROVIDERS.includes(provider)) throw new HttpError(400, `Provider không hợp lệ: ${provider}`);
+  if (!genmaxCache.has(provider)) genmaxCache.set(provider, await genmaxCatalog(provider));
+  return genmaxCache.get(provider);
+}));
+
 app.post("/api/tts/preview", h(async (req, res) => {
   const text = String(req.body?.text ?? "").trim();
   if (!text) throw new HttpError(400, "Thiếu text");
@@ -144,6 +153,7 @@ app.post("/api/tts/preview", h(async (req, res) => {
   const audio = await synthesize(text.slice(0, 1000), {
     voice: req.body?.voice || s.voice,
     rate: req.body?.rate || s.rate,
+    genmax: req.body?.genmax === undefined ? s.genmax : req.body.genmax ?? undefined,
   });
   res.type("audio/mpeg").send(audio);
 }));
@@ -661,7 +671,8 @@ async function main() {
   }
   app.listen(PORT, "127.0.0.1", () => {
     console.log(`\n  🎬 Template Video Studio: http://localhost:${PORT}\n`);
-    console.log(`  TTS: ${ttsMode === "embedded" ? "nhúng sẵn" : "dùng server có sẵn"} tại ${TTS_ENDPOINT.origin} (${getSetting("EDGE_VOICE")})`);
+    const genmax = genmaxFromEnv();
+    console.log(`  TTS: ${ttsMode === "embedded" ? "nhúng sẵn" : "dùng server có sẵn"} tại ${TTS_ENDPOINT.origin} (${genmax ? `Genmax ${genmax.provider}` : getSetting("EDGE_VOICE")})`);
     console.log(`  FFmpeg: ${ffmpegDir ?? "KHÔNG TÌM THẤY — cài FFmpeg trước khi render"}`);
     const par = parallelPlan();
     console.log(`  Song song: ${par.cores} luồng CPU / ${par.memGb} GB RAM → ${par.jobs} video cùng lúc × ${par.scenes} scene × ${par.workers} worker`);

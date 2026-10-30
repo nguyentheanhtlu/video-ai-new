@@ -1,8 +1,16 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { GENMAX_DEFAULTS } from "../../src/tts/genmax.js";
 import { ENV_FILE } from "./paths.js";
 
 /** Keys the web UI may read/write in .env.local. */
 export const SETTING_KEYS = [
+  "TTS_ENGINE",
+  "GENMAX_API_KEY",
+  "GENMAX_PROVIDER",
+  "GENMAX_VOICE",
+  "GENMAX_MODEL",
+  "GENMAX_LANGUAGE",
+  "SCRIPT_LANGUAGE",
   "EDGE_VOICE",
   "EDGE_RATE",
   "LLM_PROVIDER",
@@ -24,9 +32,16 @@ export const SETTING_KEYS = [
 ] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
-const SECRET_KEYS: SettingKey[] = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY"];
+const SECRET_KEYS: SettingKey[] = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GENMAX_API_KEY"];
 
 export const DEFAULTS: Record<SettingKey, string> = {
+  TTS_ENGINE: "genmax",
+  GENMAX_API_KEY: "",
+  GENMAX_PROVIDER: GENMAX_DEFAULTS.provider,
+  GENMAX_VOICE: GENMAX_DEFAULTS.voiceId,
+  GENMAX_MODEL: GENMAX_DEFAULTS.model,
+  GENMAX_LANGUAGE: GENMAX_DEFAULTS.language,
+  SCRIPT_LANGUAGE: "en",
   EDGE_VOICE: "vi-VN-HoaiMyNeural",
   EDGE_RATE: "+8%",
   LLM_PROVIDER: "gemini",

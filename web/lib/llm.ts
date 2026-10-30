@@ -37,6 +37,13 @@ function systemPrompt(): string {
     "",
     "# Danh mục template (templates/CATALOG.md)",
     catalog,
+    ...(getSetting("SCRIPT_LANGUAGE") === "en"
+      ? [
+          "",
+          "# NGÔN NGỮ BẮT BUỘC: TIẾNG ANH",
+          "Quy tắc này ghi đè mọi quy định về tiếng Việt ở trên. Viết TOÀN BỘ lời đọc (voiceText), tiêu đề và mọi chữ hiển thị trên video bằng tiếng Anh tự nhiên, kể cả khi bài báo gốc là tiếng Việt. Viết số và ký hiệu theo cách đọc tiếng Anh để giọng đọc phát âm đúng. Giữ nguyên tên key JSON và tên template.",
+        ]
+      : []),
   ].join("\n");
 }
 
