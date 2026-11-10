@@ -34,8 +34,8 @@ function setSceneImages(s: Scene, list: string[]) {
   s.inputs = inputs;
 }
 
-export function photosWanted(s: Scene): number {
-  return Math.max(1, Math.min(MAX_PER_SCENE, Math.round(estSec(s.voiceText) / SEC_PER_PHOTO)));
+export function photosWanted(s: Scene, secPerPhoto = SEC_PER_PHOTO): number {
+  return Math.max(1, Math.min(MAX_PER_SCENE, Math.round(estSec(s.voiceText) / secPerPhoto)));
 }
 
 /**
@@ -54,7 +54,8 @@ export async function fillSceneImages(
   script: Script,
   images: ProjectImage[],
   log: (line: string) => void,
-  opts: { onlyScene?: string; force?: boolean } = {},
+  /** secPerPhoto: long videos hold each photo longer (fewer searches per scene). */
+  opts: { onlyScene?: string; force?: boolean; secPerPhoto?: number } = {},
 ): Promise<ProjectImage[]> {
   const all = [...images];
   const hashes = await knownHashes(projectDir, images);
@@ -73,7 +74,7 @@ export async function fillSceneImages(
       if (fresh.length !== own.length) setSceneImages(s, fresh);
     }
   }
-  const need = (s: QScene) => Math.min(MAX_PER_SCENE, opts.force ? sceneImages(s).length + 2 : photosWanted(s)) - sceneImages(s).length;
+  const need = (s: QScene) => Math.min(MAX_PER_SCENE, opts.force ? sceneImages(s).length + 2 : photosWanted(s, opts.secPerPhoto)) - sceneImages(s).length;
   if (!scenes.some((s) => need(s) > 0)) return all;
 
   const queries = [title, ...scenes.map((s) => s.imageQuery ?? "")];

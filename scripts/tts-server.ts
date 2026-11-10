@@ -11,6 +11,7 @@ import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import pLimit from "p-limit";
 import { genmaxFromEnv, genmaxSynthesize, type GenmaxVoice } from "../src/tts/genmax.js";
 import { ensureFfmpegOnPath } from "../src/utils/ffmpeg-path.js";
+import { VoiceOverrideSchema, type VoiceOverride } from "../src/tts/voice.js";
 
 ensureFfmpegOnPath();
 
@@ -128,6 +129,16 @@ export async function synthesize(text: string, settings: VoiceSettings): Promise
   return finishAudio(chunks, tempo);
 }
 
+/** A script's own voice (channel profile) on top of the server's global one. */
+export function applyVoiceOverride(base: VoiceSettings, o?: VoiceOverride): VoiceSettings {
+  if (!o) return base;
+  return {
+    voice: o.edgeVoice || base.voice,
+    rate: o.rate || base.rate,
+    genmax: o.engine === "genmax" ? (o.genmax ?? base.genmax) : undefined,
+  };
+}
+
 export async function listEdgeVoices() {
   return new MsEdgeTTS().getVoices();
 }
@@ -152,17 +163,20 @@ export function startTtsServer(
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
       let text: unknown;
+      let voice: VoiceOverride | undefined;
       try {
-        text = JSON.parse(body).text;
+        const parsed = JSON.parse(body);
+        text = parsed.text;
+        if (parsed.voice) voice = VoiceOverrideSchema.parse(parsed.voice);
       } catch {
         /* handled below */
       }
       if (typeof text !== "string" || !text.trim()) {
-        res.writeHead(400).end("body must be JSON { text: string }");
+        res.writeHead(400).end("body must be JSON { text: string, voice?: VoiceOverride }");
         return;
       }
       try {
-        const audio = await synthesize(text, getSettings());
+        const audio = await synthesize(text, applyVoiceOverride(getSettings(), voice));
         res.writeHead(200, { "Content-Type": "audio/mpeg" }).end(audio);
         console.log(`[tts] ${audio.length}B ← "${text.slice(0, 60)}"`);
       } catch (e) {

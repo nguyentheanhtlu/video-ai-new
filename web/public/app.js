@@ -17,6 +17,7 @@ const isLive = (j) => j.status === "running" || j.status === "queued";
 const routes = [
   [/^#?\/?$/, "projects", projectsView],
   [/^#\/new$/, "new", newView],
+  [/^#\/channels$/, "channels", channelsView],
   [/^#\/p\/([^/]+)$/, "projects", (root, slug) => projectView(root, decodeURIComponent(slug), ctx)],
   [/^#\/templates$/, "templates", templatesView],
   [/^#\/sfx$/, "sfx", sfxView],
@@ -138,7 +139,8 @@ async function newView(root) {
   const st = status ?? (await api("GET", "/api/status"));
   const settings = await api("GET", "/api/settings");
   const customTemplates = (await store.templates()).filter((t) => t.generated);
-  let mode = "url";
+  const channels = await api("GET", "/api/channels").catch(() => []);
+  let mode = "long";
   let disposeLog = null;
 
   const opt = {
@@ -171,6 +173,14 @@ async function newView(root) {
   const fileTxt = el("input", { type: "file", accept: ".txt,text/plain", onchange: async (e) => { const f = e.target.files[0]; if (f) textArea.value = await f.text(); } });
   const blankTitle = el("input", { type: "text", placeholder: "Tên video", value: "" });
   const fileJson = el("input", { type: "file", accept: ".json,application/json" });
+  const longUrls = el("textarea", { rows: 5, placeholder: "https://vnexpress.net/...\nhttps://bongda.com.vn/...\n(mỗi dòng 1 link, tối đa 8 — càng nhiều nguồn, video dài càng chắc nội dung)" });
+  const longPrompt = el("textarea", { rows: 3, placeholder: "vd: Phân tích vì sao Real Madrid sa sút mùa này — hoặc để trống để AI tự lên ý từ các bài báo" });
+  const long = {
+    channelId: channels.some((c) => c.id === localStorage.getItem("channelId")) ? localStorage.getItem("channelId") : channels[0]?.id ?? "",
+    minutes: 8,
+  };
+  const chOf = () => channels.find((c) => c.id === long.channelId);
+  if (chOf()) long.minutes = chOf().minutes;
 
   const templatePicker = () => {
     const sel = el("select", { onchange: (e) => {
@@ -191,7 +201,32 @@ async function newView(root) {
     ["standard", "Chuẩn · ~100s"],
   ];
 
-  const optionsCard = () => el("div", { class: "card stack" },
+  const longOptions = () => {
+    const sel = el("select", { onchange: (e) => {
+      long.channelId = e.target.value;
+      localStorage.setItem("channelId", long.channelId);
+      if (chOf()) long.minutes = chOf().minutes;
+      drawForm();
+    } },
+      channels.map((c) => el("option", { value: c.id }, `${c.language === "en" ? "🇬🇧" : "🇻🇳"} ${c.name}`)),
+      el("option", { value: "" }, "Cài đặt chung (không dùng hồ sơ kênh)"));
+    sel.value = long.channelId;
+    const minLabel = el("b", {}, `${long.minutes} phút`);
+    const ch = chOf();
+    return el("div", { class: "card stack" },
+      el("h3", {}, "Tuỳ chọn video dài"),
+      field("Kênh", sel, ch ? `${ch.language === "en" ? "tiếng Anh" : "tiếng Việt"}` : "theo Cài đặt"),
+      channels.length ? null : el("div", { class: "callout small" }, "Chưa có hồ sơ kênh. ", el("a", { href: "#/channels" }, "Tạo kênh"), " để mỗi kênh có ngôn ngữ, giọng đọc, chủ đề riêng."),
+      field("Độ dài", el("div", { class: "row" },
+        el("input", { type: "range", min: 3, max: 15, step: 1, value: long.minutes, oninput: (e) => { long.minutes = Number(e.target.value); minLabel.textContent = `${long.minutes} phút`; } }), minLabel)),
+      field("Yêu cầu thêm cho AI", el("textarea", { rows: 2, value: opt.extraInstructions, placeholder: "vd: giọng văn hài hước, thêm phần so sánh với mùa trước…", oninput: (e) => (opt.extraInstructions = e.target.value) }), "tuỳ chọn"),
+      el("label", { class: "check" }, el("input", { type: "checkbox", checked: opt.autoRender, onchange: (e) => (opt.autoRender = e.target.checked) }), "Render video ngay sau khi có kịch bản"),
+      (ch?.visuals ?? "ai") === "stock" && !st.stock?.length ? el("div", { class: "callout warn small" }, "Kênh này dùng video stock nhưng chưa có PIXABAY_API_KEY → chỉ dùng ảnh. ", el("a", { href: "#/settings" }, "Nhập key")) : null,
+      (ch?.visuals ?? "ai") === "ai" ? el("div", { class: "small muted" }, "🎨 Ảnh AI (Gemini) được kiểm tra khớp lời đọc từng ảnh — cần GEMINI_API_KEY đã bật thanh toán.") : null,
+      el("p", { class: "small faint", style: { margin: 0 } }, "Khung 16:9 · ảnh zoom chậm + clip · phụ đề · nhạc nền · chương YouTube · thumbnail."));
+  };
+
+  const optionsCard = () => mode === "long" ? longOptions() : el("div", { class: "card stack" },
     el("h3", {}, "Tuỳ chọn"),
     mode === "url" || mode === "text" ? templatePicker() : null,
     mode === "text" ? field("Dùng văn bản này thế nào", seg([[true, "Đọc đúng kịch bản của tôi"], [false, "AI viết lại từ bài"]], () => opt.keepScript, (v) => { opt.keepScript = v; drawForm(); }),
@@ -213,10 +248,14 @@ async function newView(root) {
   const progressBox = el("div");
 
   function drawForm() {
-    const needsLlm = mode === "url" || mode === "text";
-    const tabs = el("div", { class: "tabs" }, [["url", "🔗 Từ link bài báo"], ["text", "📝 Dán văn bản / .txt"], ["blank", "📄 Kịch bản trống"], ["import", "📦 Import script.json"]].map(([k, l]) =>
+    const needsLlm = mode === "url" || mode === "text" || mode === "long";
+    const tabs = el("div", { class: "tabs" }, [["long", "🎞️ Video dài YouTube"], ["url", "🔗 Từ link bài báo"], ["text", "📝 Dán văn bản / .txt"], ["blank", "📄 Kịch bản trống"], ["import", "📦 Import script.json"]].map(([k, l]) =>
       el("button", { class: mode === k ? "active" : "", onclick: () => { mode = k; drawForm(); } }, l)));
     const main = {
+      long: el("div", { class: "card stack" },
+        field("Link bài báo", longUrls, "mỗi dòng 1 link"),
+        field("Chủ đề / góc nhìn", longPrompt, "tuỳ chọn khi đã có link"),
+        el("p", { class: "small muted", style: { margin: 0 } }, "AI đọc các bài, lập dàn ý theo chương, viết lời dẫn, rồi lấy ảnh thật cho cảnh về người/sự kiện và vẽ ảnh AI (đã kiểm tra khớp lời đọc) cho các cảnh còn lại. Chỉ có chủ đề, không có link → AI viết từ kiến thức chung (nên kiểm tra lại dữ kiện).")),
       url: el("div", { class: "card stack" }, field("Link bài báo", urlInput), el("p", { class: "small muted", style: { margin: 0 } }, "Server tải trang và lấy nội dung chính. Trang cần đăng nhập / chặn bot → dùng tab Dán văn bản.")),
       text: el("div", { class: "card stack" }, field("Nội dung bài", textArea), el("div", { class: "row small muted" }, "Hoặc chọn file .txt:", fileTxt)),
       blank: el("div", { class: "card stack" }, field("Tên video", blankTitle), el("p", { class: "small muted", style: { margin: 0 } }, "Tạo kịch bản mẫu 3 scene (hook → body → outro) rồi tự viết trong trình soạn thảo. Không cần AI.")),
@@ -235,7 +274,13 @@ async function newView(root) {
   async function submit(e) {
     const btn = e.currentTarget;
     let body;
-    if (mode === "url") {
+    if (mode === "long") {
+      const urls = longUrls.value.split(/\s+/).map((u) => u.trim()).filter(Boolean);
+      const bad = urls.filter((u) => !/^https?:\/\//.test(u));
+      if (bad.length) return toast(`Link không hợp lệ: ${bad[0]}`, "warn");
+      if (!urls.length && longPrompt.value.trim().length < 10) return toast("Nhập ít nhất 1 link, hoặc mô tả chủ đề video", "warn");
+      body = { mode, urls, prompt: longPrompt.value.trim(), channelId: long.channelId || undefined, minutes: long.minutes, extraInstructions: opt.extraInstructions, autoRender: opt.autoRender };
+    } else if (mode === "url") {
       if (!/^https?:\/\//.test(urlInput.value.trim())) return toast("Nhập link bắt đầu bằng http:// hoặc https://", "warn");
       body = { mode, url: urlInput.value.trim(), ...opt };
     } else if (mode === "text") {
@@ -274,9 +319,189 @@ async function newView(root) {
 
   drawForm();
   clear(root,
-    el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "Tạo video mới"), el("p", {}, "Đưa vào một bài báo, nhận về video 9:16 — AI viết chữ, template lo hình."))),
+    el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "Tạo video mới"), el("p", {}, "Video dài 16:9 cho YouTube, hoặc video ngắn 9:16 từ một bài báo."))),
     formBox, progressBox);
   return () => disposeLog?.();
+}
+
+// ── Channels ───────────────────────────────────────────────────────────────
+async function channelsView(root) {
+  const [settings, edgeVoices] = await Promise.all([api("GET", "/api/settings"), store.voices().catch(() => [])]);
+  let list = await api("GET", "/api/channels");
+  const field = (label, node, hint) => el("label", { class: "field" }, el("span", {}, label, hint ? el("em", {}, hint) : null), node);
+  const listBox = el("div", { class: "stack" });
+  const formBox = el("div");
+
+  const blank = () => ({
+    name: "", language: "vi", niche: "", url: "", brandColor: "#0e9f6e", minutes: 8, music: true, subtitles: true,
+    visuals: "ai", aiImageSize: "2K", aiHookVideo: false,
+    voice: settings.GENMAX_API_KEY_SET
+      ? { engine: "genmax", rate: "+0%", genmax: { provider: settings.GENMAX_PROVIDER, voiceId: settings.GENMAX_VOICE, model: settings.GENMAX_MODEL, language: settings.GENMAX_LANGUAGE } }
+      : { engine: "edge", edgeVoice: "vi-VN-HoaiMyNeural", rate: "+5%" },
+  });
+
+  function drawList() {
+    clear(listBox, list.length === 0
+      ? el("div", { class: "empty" }, el("div", { class: "big" }, "📺"), el("p", {}, "Chưa có kênh nào. Mỗi kênh có ngôn ngữ, giọng đọc, chủ đề và màu riêng — tạo bao nhiêu kênh cũng được."))
+      : list.map((c) => el("div", { class: "card row between" },
+        el("div", { class: "row" },
+          el("span", { style: { width: "14px", height: "40px", borderRadius: "4px", background: c.brandColor } }),
+          el("div", {},
+            el("b", {}, `${c.language === "en" ? "🇬🇧" : "🇻🇳"} ${c.name}`),
+            el("div", { class: "small muted" }, c.niche ? c.niche.slice(0, 110) : "(chưa mô tả chủ đề)"),
+            el("div", { class: "small faint" }, `${c.voice.engine === "genmax" ? `Genmax ${c.voice.genmax?.provider ?? ""}` : c.voice.edgeVoice} · ${c.minutes} phút · ${c.visuals === "stock" ? "video stock" : "ảnh AI"} · id: ${c.id}`))),
+        el("div", { class: "row" },
+          el("button", { class: "btn primary sm", onclick: () => { localStorage.setItem("channelId", c.id); location.hash = "#/new"; } }, "✨ Tạo video"),
+          el("button", { class: "btn sm", onclick: () => drawForm(structuredClone(c)) }, "Sửa"),
+          el("button", { class: "btn ghost sm danger", onclick: async () => {
+            if (!(await confirmBox(`Xoá kênh "${c.name}"? Các dự án đã tạo không bị xoá.`, "Xoá", true))) return;
+            list = await guard(() => api("DELETE", `/api/channels/${c.id}`), "Đã xoá kênh");
+            drawList();
+          } }, "Xoá")))));
+  }
+
+  async function drawForm(ch) {
+    if (!ch) return clear(formBox);
+    const text = (key, props = {}) => el("input", { type: "text", value: ch[key] ?? "", oninput: (e) => (ch[key] = e.target.value), ...props });
+    const niche = el("textarea", { rows: 3, placeholder: "vd: Tin bóng đá châu Âu, phân tích chiến thuật, giọng sôi nổi, hay đặt câu hỏi cho khán giả", oninput: (e) => (ch.niche = e.target.value) });
+    niche.value = ch.niche ?? "";
+    const langSeg = el("div", { class: "seg" }, [["vi", "🇻🇳 Tiếng Việt"], ["en", "🇬🇧 Tiếng Anh"]].map(([v, l]) =>
+      el("button", { class: ch.language === v ? "active" : "", onclick: () => {
+        ch.language = v;
+        if (ch.voice.engine === "edge") ch.voice.edgeVoice = v === "vi" ? "vi-VN-HoaiMyNeural" : "en-US-AndrewMultilingualNeural";
+        drawForm(ch);
+      } }, l)));
+    const color = el("input", { type: "color", value: ch.brandColor, oninput: (e) => (ch.brandColor = e.target.value) });
+    const minutes = el("input", { type: "number", min: 2, max: 20, value: ch.minutes, style: { width: "90px" }, oninput: (e) => (ch.minutes = Number(e.target.value) || 8) });
+    const check = (key, label) => el("label", { class: "check" }, el("input", { type: "checkbox", checked: ch[key] !== false, onchange: (e) => (ch[key] = e.target.checked) }), label);
+
+    // Voice
+    const voiceBox = el("div", { class: "stack" });
+    const rateNum = parseInt(ch.voice.rate ?? "+0%", 10) || 0;
+    const rateLabel = el("b", {}, `${rateNum >= 0 ? "+" : ""}${rateNum}%`);
+    const rate = el("input", { type: "range", min: -20, max: 40, step: 1, value: rateNum, oninput: (e) => {
+      const v = Number(e.target.value);
+      ch.voice.rate = `${v >= 0 ? "+" : ""}${v}%`;
+      rateLabel.textContent = ch.voice.rate;
+    } });
+    async function drawVoice() {
+      const engineSeg = el("div", { class: "seg" }, [["edge", "Edge TTS (miễn phí)"], ["genmax", "Genmax"]].map(([v, l]) =>
+        el("button", { class: ch.voice.engine === v ? "active" : "", onclick: () => { ch.voice.engine = v; drawVoice(); } }, l)));
+      if (ch.voice.engine === "edge") {
+        const want = ch.language === "vi" ? (v) => v.locale === "vi-VN" : (v) => v.locale.startsWith("en-");
+        const opts = edgeVoices.filter(want);
+        if (!opts.some((v) => v.id === ch.voice.edgeVoice)) ch.voice.edgeVoice = opts[0]?.id ?? ch.voice.edgeVoice;
+        const sel = el("select", { onchange: (e) => (ch.voice.edgeVoice = e.target.value) },
+          opts.map((v) => el("option", { value: v.id }, `${v.id} (${v.gender === "Female" ? "nữ" : "nam"})`)));
+        sel.value = ch.voice.edgeVoice;
+        delete ch.voice.genmax;
+        return clear(voiceBox, engineSeg, field("Giọng", sel, `${opts.length} giọng ${ch.language === "vi" ? "tiếng Việt" : "tiếng Anh"}`));
+      }
+      if (!settings.GENMAX_API_KEY_SET) return clear(voiceBox, engineSeg, el("div", { class: "callout warn small" }, "Chưa có GENMAX_API_KEY — nhập ở ", el("a", { href: "#/settings" }, "Cài đặt"), " trước."));
+      ch.voice.genmax ??= { provider: "minimax", voiceId: "", model: "", language: "" };
+      const g = ch.voice.genmax;
+      clear(voiceBox, engineSeg, el("div", { class: "muted small" }, "Đang tải giọng Genmax…"));
+      let cat;
+      try { cat = await api("GET", `/api/genmax/catalog?provider=${g.provider}`); } catch (err) { return clear(voiceBox, engineSeg, el("div", { class: "callout bad small" }, err.message)); }
+      const langMatch = (l) => (ch.language === "vi" ? /vi|việt|vietnam/i.test(l) : /^en|english/i.test(l));
+      const voices = [...cat.voices].sort((a, b) => Number(langMatch(b.language)) - Number(langMatch(a.language)));
+      if (!voices.some((v) => v.id === g.voiceId)) { const v = voices[0]; if (v) { g.voiceId = v.id; g.language = v.language; } }
+      if (!cat.models.some((m) => m.id === g.model)) g.model = cat.defaultModel;
+      const search = el("input", { type: "text", placeholder: `Tìm trong ${voices.length} giọng…`, oninput: () => fill() });
+      const vSel = el("select", { onchange: (e) => { const v = voices.find((x) => x.id === e.target.value); g.voiceId = v.id; g.language = v.language; } });
+      const fill = () => {
+        const q = search.value.trim().toLowerCase();
+        const hits = voices.filter((v) => !q || `${v.name} ${v.language}`.toLowerCase().includes(q));
+        const langs = [...new Set(hits.map((v) => v.language))];
+        clear(vSel, langs.map((l) => el("optgroup", { label: l }, hits.filter((v) => v.language === l).map((v) => el("option", { value: v.id }, `${v.name}${v.gender ? ` (${v.gender})` : ""}`)))));
+        vSel.value = g.voiceId;
+      };
+      fill();
+      const mSel = el("select", { onchange: (e) => (g.model = e.target.value) }, cat.models.map((m) => el("option", { value: m.id }, m.name)));
+      mSel.value = g.model;
+      clear(voiceBox, engineSeg,
+        el("div", { class: "seg" }, [["minimax", "MiniMax"], ["capcut", "CapCut"], ["elevenlabs", "ElevenLabs"]].map(([v, l]) =>
+          el("button", { class: g.provider === v ? "active" : "", onclick: () => { g.provider = v; g.voiceId = ""; drawVoice(); } }, l))),
+        el("div", { class: "grid-2" }, field("Tìm giọng", search), field("Giọng", vSel, ch.language === "vi" ? "giọng tiếng Việt xếp trước" : "giọng tiếng Anh xếp trước"), field("Model", mSel)));
+    }
+    drawVoice();
+
+    // Visuals: AI illustrations (Gemini, checked against the narration) or stock footage.
+    ch.visuals ??= "ai";
+    ch.aiImageSize ??= "2K";
+    const visualsBox = el("div", { class: "stack" });
+    const drawVisuals = () => {
+      const perImage = ch.aiImageSize === "1K" ? 0.034 : 0.05;
+      // ~1 image per 7s of narration, plus ~30% redraws after the check.
+      const imgs = Math.round((ch.minutes * 60) / 7);
+      const cost = imgs * perImage * 1.3 + (ch.aiHookVideo ? 1 : 0);
+      clear(visualsBox,
+        el("div", { class: "seg" }, [["ai", "🎨 Ảnh AI (Gemini)"], ["stock", "🎞 Video stock (Pixabay)"]].map(([v, l]) =>
+          el("button", { class: ch.visuals === v ? "active" : "", onclick: () => { ch.visuals = v; drawVisuals(); } }, l))),
+        ch.visuals === "ai"
+          ? el("div", { class: "stack" },
+            el("p", { class: "small muted", style: { margin: 0 } },
+              "AI viết prompt riêng cho từng cảnh theo lời đọc → Gemini vẽ → một model khác xem lại từng ảnh, chấm điểm độ khớp với lời đọc và lỗi hình (chữ, người dị dạng, sai chủ đề); dưới 7/10 thì vẽ lại. Cảnh nói về người thật / sự kiện cụ thể vẫn dùng ảnh thật từ bài báo."),
+            el("div", { class: "grid-2" },
+              field("Độ nét ảnh", (() => {
+                const sel = el("select", { onchange: (e) => { ch.aiImageSize = e.target.value; drawVisuals(); } },
+                  el("option", { value: "2K" }, "2K — nét cho 1080p (~0,05 USD/ảnh)"), el("option", { value: "1K" }, "1K — rẻ hơn (~0,034 USD/ảnh)"));
+                sel.value = ch.aiImageSize;
+                return sel;
+              })()),
+              field("Clip mở đầu", el("label", { class: "check" },
+                el("input", { type: "checkbox", checked: !!ch.aiHookVideo, onchange: (e) => { ch.aiHookVideo = e.target.checked; drawVisuals(); } }),
+                "Biến ảnh hook thành clip động (~0,1 USD/giây)"))),
+            el("div", { class: "callout small" }, `Ước tính video ${ch.minutes} phút: ~${imgs} ảnh → khoảng ${cost.toFixed(1)} USD (giá niêm yết Google, chưa gồm giọng đọc). Cần GEMINI_API_KEY đã bật thanh toán.`))
+          : el("p", { class: "small muted", style: { margin: 0 } }, "Video stock miễn phí từ Pixabay (cần PIXABAY_API_KEY). Cảnh không có video phù hợp dùng ảnh."));
+    };
+    drawVisuals();
+    minutes.addEventListener("input", drawVisuals);
+    const sample = el("input", { type: "text", value: ch.language === "vi" ? "Chào mừng các bạn quay trở lại với kênh. Hôm nay chúng ta sẽ cùng tìm hiểu một câu chuyện rất thú vị." : "Welcome back to the channel. Today we are diving into a story you will not want to miss." });
+    const tryBtn = el("button", { class: "btn", onclick: async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true;
+      try {
+        const blob = await api("POST", "/api/tts/preview", { text: sample.value, voice: ch.voice.edgeVoice, rate: ch.voice.rate, genmax: ch.voice.engine === "genmax" ? ch.voice.genmax : null });
+        new Audio(URL.createObjectURL(blob)).play();
+      } catch (err) { toast(err.message, "bad"); } finally { b.disabled = false; }
+    } }, "🔊 Nghe thử");
+
+    clear(formBox, el("div", { class: "card stack", style: { marginTop: "16px" } },
+      el("div", { class: "row between" }, el("h2", {}, ch.id ? `Sửa kênh: ${ch.name}` : "Kênh mới"), el("button", { class: "btn ghost sm", onclick: () => drawForm(null) }, "Đóng")),
+      el("div", { class: "grid-2" },
+        field("Tên kênh", text("name", { placeholder: "vd: Bóng Đá 24h" }), "hiện trên video"),
+        field("Ngôn ngữ", langSeg),
+        field("Link kênh", text("url", { placeholder: "https://youtube.com/@..." })),
+        field("Màu nhận diện", el("div", { class: "row" }, color, el("span", { class: "small faint" }, "thẻ chương, thumbnail")))),
+      field("Chủ đề & phong cách", niche, "AI dùng cho mọi kịch bản của kênh"),
+      el("h3", {}, "🎙 Giọng đọc"),
+      voiceBox,
+      el("div", { class: "grid-2" },
+        field("Tốc độ đọc", el("div", { class: "row" }, rate, rateLabel)),
+        field("Độ dài mặc định (phút)", minutes)),
+      el("div", { class: "row" }, el("div", { class: "grow" }, sample), tryBtn),
+      el("div", { class: "row" }, check("subtitles", "In phụ đề lên video"), check("music", "Nhạc nền")),
+      el("h3", {}, "🖼 Hình minh hoạ"),
+      visualsBox,
+      ch.id ? el("p", { class: "small faint", style: { margin: 0 } }, `Nhạc riêng của kênh: chép mp3 vào assets/music/${ch.id}/`) : null,
+      el("div", { class: "row" }, el("button", { class: "btn primary", onclick: async () => {
+        if (!ch.name?.trim()) return toast("Nhập tên kênh", "warn");
+        const saved = await guard(() => api("POST", "/api/channels", ch), "Đã lưu kênh");
+        list = await api("GET", "/api/channels");
+        drawList();
+        drawForm(null);
+        return saved;
+      } }, "💾 Lưu kênh"))));
+    formBox.scrollIntoView({ behavior: "smooth" });
+  }
+
+  drawList();
+  clear(root,
+    el("div", { class: "page-head" },
+      el("div", {}, el("h1", {}, "Kênh YouTube"), el("p", {}, "Mỗi kênh: ngôn ngữ, giọng đọc, chủ đề, màu riêng. Video dài được làm theo kênh bạn chọn.")),
+      el("button", { class: "btn primary", onclick: () => drawForm(blank()) }, "+ Thêm kênh")),
+    listBox, formBox);
 }
 
 // ── Templates ──────────────────────────────────────────────────────────────
@@ -331,7 +556,7 @@ async function templatesView(root) {
     el("div", {}, el("button", { class: "btn primary", onclick: createFromSample }, "✨ Tạo template")),
     refProgress);
   async function draw(fresh = false) {
-    const list = (await store.templates(fresh)).filter((t) => t.aspects.includes(aspect));
+    const list = (await store.templates(fresh)).filter((t) => t.aspects.includes(aspect) && !t.virtual);
     clear(grid, list.map((t) => {
       const preview = t.previews?.[aspect];
       const running = [...jobs.values()].find((j) => j.kind === "preview-template" && isLive(j) && j.title.includes(t.id) && j.title.includes(aspect));
@@ -553,6 +778,8 @@ async function settingsView(root) {
   let provider = form.LLM_PROVIDER === "claude" ? "claude" : "gemini";
   const provBox = el("div");
   const geminiKey = el("input", { type: "password", placeholder: s.GEMINI_API_KEY_SET ? "•••••• (đã lưu — nhập để thay)" : "AIza…", oninput: (e) => (form.GEMINI_API_KEY = e.target.value) });
+  const pixabayKey = el("input", { type: "password", placeholder: s.PIXABAY_API_KEY_SET ? "•••••• (đã lưu — nhập để thay)" : "key Pixabay", oninput: (e) => (form.PIXABAY_API_KEY = e.target.value) });
+  const pexelsKey = el("input", { type: "password", placeholder: s.PEXELS_API_KEY_SET ? "•••••• (đã lưu — nhập để thay)" : "chỉ khi đã có key cũ", oninput: (e) => (form.PEXELS_API_KEY = e.target.value) });
   const claudeKey = el("input", { type: "password", placeholder: s.ANTHROPIC_API_KEY_SET ? "•••••• (đã lưu — nhập để thay)" : "sk-ant-…", oninput: (e) => (form.ANTHROPIC_API_KEY = e.target.value) });
   const claudeModel = el("select", { onchange: (e) => (form.CLAUDE_MODEL = e.target.value) },
     [["claude-opus-5-5", "Claude Opus 5.5 (mặc định, chất lượng cao)"], ["claude-sonnet-5-5", "Claude Sonnet 5.5 (nhanh, rẻ hơn)"], ["claude-haiku-4-5", "Claude Haiku 4.5 (rẻ nhất)"]]
@@ -662,6 +889,10 @@ async function settingsView(root) {
     await guard(() => api("PUT", "/api/settings", patch), "Đã lưu cài đặt vào .env.local");
     geminiKey.value = "";
     claudeKey.value = "";
+    pexelsKey.value = "";
+    pixabayKey.value = "";
+    delete form.PEXELS_API_KEY;
+    delete form.PIXABAY_API_KEY;
     if (form.GENMAX_API_KEY) {
       delete form.GENMAX_API_KEY;
       genmaxKey.value = "";
@@ -704,6 +935,17 @@ async function settingsView(root) {
             el("button", { class: "btn", onclick: (e) => playUrl("/sfx-files/__brand__/subscribe.mp3", e.currentTarget) }, "🔔 Nghe chuông"));
         })())),
       el("div", { class: "card stack" }, el("h2", {}, "✨ AI viết kịch bản"), provBox),
+      el("div", { class: "card stack" },
+        el("h2", {}, "🎞 Video dài (YouTube)"),
+        el("div", { class: "grid-2" },
+          field("Model vẽ ảnh AI", bind("GEMINI_IMAGE_MODEL"), "mặc định gemini-nano-banana-2.1"),
+          field("Model tạo clip AI", bind("GEMINI_VIDEO_MODEL"), "mặc định gemini-omni-1.2-flash"),
+          field("PIXABAY_API_KEY", pixabayKey, s.PIXABAY_API_KEY_SET ? "đã lưu" : "tuỳ chọn"),
+          field("PEXELS_API_KEY", pexelsKey, s.PEXELS_API_KEY_SET ? "đã lưu" : "tuỳ chọn"),
+          field("Nhạc nền", el("div", { class: "small", style: { paddingTop: "8px" } }, `${st.music} bài trong assets/music/`))),
+        el("p", { class: "small muted", style: { margin: 0 } },
+          "Video minh hoạ miễn phí, được dùng thương mại. Lấy key Pixabay: đăng ký tài khoản rồi mở ", el("a", { href: "https://pixabay.com/api/docs/", target: "_blank" }, "pixabay.com/api/docs"), " — key hiện ngay trong trang. Pexels đã ngừng cấp key mới (2026); ai còn key cũ thì nhập để có thêm nguồn. ",
+          "Nhạc nền: chép file mp3 không bản quyền (vd YouTube Audio Library) vào assets/music/ — hoặc assets/music/<id-kênh>/ để mỗi kênh một bộ nhạc.")),
       brandCard(),
       perfCard(),
       el("div", { class: "card stack" },
@@ -711,6 +953,7 @@ async function settingsView(root) {
         sys(st.ffmpeg && st.ffprobe, "FFmpeg + ffprobe", st.ffmpegDir ?? "không tìm thấy", "Cài FFmpeg rồi khởi động lại web (npm run web)."),
         sys(!!st.chrome, "Chrome / Edge", st.chrome ?? "không tìm thấy", "HyperFrames cần Chrome để render template."),
         sys(st.tts.ok, "Server giọng đọc", `${st.tts.endpoint} · ${st.tts.mode === "embedded" ? "chạy kèm web" : st.tts.mode === "external" ? "server riêng (npm run tts:server)" : "không chạy"}`, "Khởi động lại web để bật lại."),
+        sys(st.stock?.length > 0, "Video minh hoạ", st.stock?.length ? st.stock.join(" + ") : "chưa có key", "Nhập PIXABAY_API_KEY ở trên — không có thì video dài chỉ dùng ảnh."),
         sys(st.sfx > 0, "Thư viện SFX", `${st.sfx} file trong assets/sfx`, "Vào trang Âm thanh để tải."),
         sys(st.llm.configured, "API key AI", `${st.llm.provider} · ${st.llm.model}`, "Nhập key ở trên (chỉ cần khi tạo kịch bản bằng AI)."),
         el("div", { class: "small faint" }, `Node ${st.node}`)),

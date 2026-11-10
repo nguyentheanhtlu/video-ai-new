@@ -41,6 +41,7 @@ import {
   saveScript,
   validateScript,
   writeMeta,
+  isLongForm,
   type Script,
 } from "./lib/projects.js";
 import { getSetting, publicSettings, updateSettings } from "./lib/settings.js";
@@ -48,6 +49,10 @@ import { relatedArticleImages, searchImages } from "./lib/image-search.js";
 import { fillSceneImages } from "./lib/scene-images.js";
 import { downloadArticleImages, extractImages, fetchImageBytes, readImages, saveImage, writeImages, type ProjectImage } from "./lib/images.js";
 import { getTemplate, listTemplates } from "./lib/templates.js";
+import { deleteChannel, getChannel, listChannels, saveChannel, type Channel } from "./lib/channels.js";
+import { generateLongScript, WORDS_PER_SEC } from "./lib/long-script.js";
+import { fillSceneVideos, readVideos, stockConfigured, stockProviders, writeVideos } from "./lib/stock-video.js";
+import { aiHookClip, fillAiImages, vetPhotos } from "./lib/ai-visuals.js";
 
 const PORT = Number(process.env.WEB_PORT ?? 3210);
 const TTS_ENDPOINT = new URL(process.env.OMNIVOICE_ENDPOINT ?? "http://127.0.0.1:8123");
@@ -86,6 +91,19 @@ function findChrome(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
+/** Background tracks for long videos (assets/music/*.mp3, plus one folder per channel). */
+function musicCount(): number {
+  const dir = join(ROOT, "assets", "music");
+  if (!existsSync(dir)) return 0;
+  const isAudio = (f: string) => /\.(mp3|m4a|wav|ogg)$/i.test(f);
+  let n = 0;
+  for (const f of readdirSync(dir, { withFileTypes: true })) {
+    if (f.isFile() && isAudio(f.name)) n++;
+    else if (f.isDirectory()) n += readdirSync(join(dir, f.name)).filter(isAudio).length;
+  }
+  return n;
+}
+
 function sfxCount(): number {
   const idx = indexSfxLibrary(SFX_DIR);
   return Object.values(idx).reduce((n, f) => n + f.length, 0);
@@ -110,6 +128,8 @@ app.get("/api/status", h(async () => {
     chrome: findChrome(),
     tts: { ok: ttsOk, mode: ttsOk ? ttsMode : "down", endpoint: TTS_ENDPOINT.origin },
     sfx: sfxCount(),
+    stock: stockProviders(),
+    music: musicCount(),
     sfxRaw: existsSync(SFX_RAW_DIR),
     llm: { provider, configured: llmKey, model: getSetting(provider === "claude" ? "CLAUDE_MODEL" : "GEMINI_MODEL") },
     parallel: parallelPlan(),
@@ -346,6 +366,34 @@ app.get("/api/brand/logo", (_req, res) => {
   res.sendFile(p);
 });
 
+// ── Channels (one profile per YouTube channel: language, voice, topic, look) ─
+app.get("/api/channels", h(() => listChannels()));
+app.post("/api/channels", h((req) => saveChannel(req.body)));
+app.delete("/api/channels/:id", h(async (req) => {
+  await deleteChannel(param(req, "id"));
+  return listChannels();
+}));
+
+/** The global Settings as a channel, for long videos made without a channel profile. */
+function settingsChannel(): Channel {
+  const genmax = genmaxFromEnv();
+  return {
+    id: "default",
+    name: getSetting("CHANNEL_NAME"),
+    language: getSetting("SCRIPT_LANGUAGE") === "vi" ? "vi" : "en",
+    niche: "",
+    url: getSetting("CHANNEL_URL"),
+    voice: genmax ? { engine: "genmax", genmax, rate: getSetting("EDGE_RATE") } : { engine: "edge", edgeVoice: getSetting("EDGE_VOICE"), rate: getSetting("EDGE_RATE") },
+    brandColor: /^#[0-9a-f]{6}$/i.test(getSetting("BRAND_COLOR")) ? getSetting("BRAND_COLOR") : "#0e9f6e",
+    minutes: 8,
+    music: true,
+    subtitles: true,
+    visuals: "ai",
+    aiImageSize: "2K",
+    aiHookVideo: false,
+  };
+}
+
 // ── Projects ───────────────────────────────────────────────────────────────
 app.get("/api/projects", h(() => listProjects()));
 
@@ -381,7 +429,8 @@ app.post("/api/projects", h(async (req) => {
     const slug = await createProject(script, { sourceKind: "import" });
     return { slug };
   }
-  if (mode !== "url" && mode !== "text") throw new HttpError(400, "mode phải là url | text | blank | import");
+  if (mode === "long") return { jobId: enqueueLong(body).id };
+  if (mode !== "url" && mode !== "text") throw new HttpError(400, "mode phải là url | text | blank | import | long");
 
   const template = body.templateId ? getTemplate(String(body.templateId)) : undefined;
   if (body.templateId && !template) throw new HttpError(400, `Không có template "${body.templateId}"`);
@@ -455,6 +504,207 @@ app.post("/api/projects", h(async (req) => {
   return { jobId: job.id };
 }));
 
+/**
+ * Long-form YouTube video: any number of article links and/or a topic prompt →
+ * outline → chapters → stock footage + photos per scene → project (→ render).
+ */
+function enqueueLong(body: Record<string, unknown>) {
+  const channel = body.channelId ? getChannel(String(body.channelId)) : settingsChannel();
+  if (!channel) throw new HttpError(400, `Không có kênh "${body.channelId}"`);
+  const urls = (Array.isArray(body.urls) ? body.urls : String(body.urls ?? "").split(/\s+/))
+    .map((u) => String(u).trim())
+    .filter((u) => /^https?:\/\//.test(u))
+    .slice(0, 8);
+  const prompt = String(body.prompt ?? "").trim();
+  const text = String(body.text ?? "").trim();
+  if (!urls.length && !prompt && text.length < 50) throw new HttpError(400, "Nhập ít nhất 1 link bài báo, hoặc chủ đề / nội dung cho video.");
+  const minutes = Math.min(20, Math.max(2, Number(body.minutes) || channel.minutes));
+  const label = prompt.slice(0, 50) || urls[0] || text.slice(0, 50);
+  return enqueue("generate", `Video dài (${channel.name}): ${label}`, async (ctx) => {
+    const steps = 6;
+    ctx.progress(1, steps, "Đọc bài nguồn");
+    const articles: Article[] = [];
+    for (const url of urls) {
+      try {
+        const a = await fetchArticle(url);
+        articles.push(a);
+        ctx.log(`✓ ${a.title} — ${a.content.length} ký tự, ${a.images.length} ảnh`);
+      } catch (e) {
+        ctx.log(`✗ ${url}: ${(e as Error).message}`);
+      }
+    }
+    if (text.length >= 50) articles.push(articleFromText(text));
+    if (urls.length && !articles.length && !prompt) throw new Error("Không đọc được bài nào — kiểm tra link hoặc dán nội dung vào ô văn bản.");
+    const slug = await allocateProject(prompt || articles[0]?.title || "video-dai");
+    const dir = projectDir(slug);
+    try {
+      ctx.progress(2, steps, "Tải ảnh bài báo");
+      let images: ProjectImage[] = [];
+      for (const a of articles.filter((x) => x.images.length)) {
+        images.push(...(await downloadArticleImages(dir, a.images, a.url, ctx.log, 8)));
+      }
+      await writeImages(dir, images);
+
+      ctx.progress(3, steps, "AI lập dàn ý và viết kịch bản");
+      const script = await generateLongScript(articles, images, {
+        channel,
+        minutes,
+        prompt: prompt || undefined,
+        extraInstructions: body.extraInstructions ? String(body.extraInstructions) : undefined,
+      }, ctx.log);
+
+      type LongScene = (typeof script.scenes)[number];
+      const hasPicture = (sc: LongScene) => !!sc.inputs.image || !!sc.inputs.images?.length || !!sc.inputs.videos?.length;
+      /** Find real photos for these scenes, then let Gemini drop the ones that don't fit the narration. */
+      const photoRound = async (scenes: LongScene[]) => {
+        if (!scenes.length) return;
+        try {
+          const sub = { ...script, scenes } as unknown as Script;
+          images = await fillSceneImages(dir, sub, images, ctx.log, { secPerPhoto: 6 });
+          await writeImages(dir, images);
+        } catch (e) {
+          ctx.log(`Không tìm được ảnh (${(e as Error).message})`);
+        }
+        await vetPhotos(dir, scenes, images, ctx.log);
+      };
+
+      if (channel.visuals === "ai") {
+        // Real people / events: real photos only. Everything else: AI illustrations checked against the narration.
+        ctx.progress(4, steps, "Tìm + kiểm tra ảnh thật cho cảnh về người, sự kiện cụ thể");
+        await photoRound(script.scenes.filter((sc) => sc.visual === "photo"));
+        ctx.progress(5, steps, "AI vẽ ảnh minh hoạ + kiểm tra từng ảnh");
+        try {
+          const ai = await fillAiImages(dir, script.scenes, { style: script.style.visualStyle ?? "", size: channel.aiImageSize }, ctx.log, { fillEmpty: true });
+          images = [...images, ...ai.images];
+          await writeImages(dir, images);
+        } catch (e) {
+          // The script is still good: keep the project and fall back to real photos below.
+          ctx.log(`⚠ Bỏ qua ảnh AI: ${(e as Error).message}`);
+        }
+        if (channel.aiHookVideo) {
+          const hook = script.scenes[0];
+          const clip = await aiHookClip(dir, hook, hook.voiceText.split(/s+/).length / WORDS_PER_SEC[channel.language], ctx.log);
+          if (clip) {
+            hook.inputs.videos = [clip.file, ...(hook.inputs.videos ?? [])];
+            await writeVideos(dir, [...(await readVideos(dir)), clip]);
+          }
+        }
+      } else {
+        ctx.progress(4, steps, "Tìm video minh hoạ (Pixabay)");
+        await fillSceneVideos(dir, script.scenes, WORDS_PER_SEC[channel.language], ctx.log);
+        ctx.progress(5, steps, "Tìm + kiểm tra ảnh cho các cảnh còn lại");
+        await photoRound(script.scenes.filter((sc) => !sc.inputs.videos?.length));
+      }
+      // Scenes left with nothing (photos rejected, AI unavailable): one more search, checked again.
+      const empty = script.scenes.filter((sc) => sc.type !== "outro" && !hasPicture(sc));
+      if (empty.length) {
+        ctx.progress(6, steps, `Tìm lại ảnh cho ${empty.length} cảnh còn trống`);
+        await photoRound(empty);
+      }
+      await createProject(script as unknown as Script, {
+        slug,
+        sourceKind: urls.length ? "url" : "text",
+        sourceText: [prompt, ...articles.map((a) => `${a.title}\n${a.url}\n\n${a.content}`)].filter(Boolean).join("\n\n---\n\n"),
+      });
+    } catch (e) {
+      await deleteProject(slug);
+      throw e;
+    }
+    ctx.log(`✓ Đã tạo dự án ${slug}`);
+    if (body.autoRender) enqueuePipeline(slug);
+    return { slug };
+  });
+}
+
+/** Stock footage for one scene of a long video (or every scene that asked for footage). */
+app.post("/api/projects/:slug/videos/autofill", h(async (req) => {
+  const slug = param(req, "slug");
+  if (activeJobFor(slug)) throw new HttpError(409, "Dự án đang render.");
+  if (!stockConfigured()) throw new HttpError(400, "Chưa nhập PIXABAY_API_KEY trong Cài đặt (miễn phí tại pixabay.com/api/docs).");
+  const script = await readScript(slug);
+  const sceneId = req.body?.sceneId ? String(req.body.sceneId) : undefined;
+  const scenes = script.scenes.filter((s) => !sceneId || s.id === sceneId);
+  for (const s of scenes) {
+    if (!sceneId) continue;
+    // Asked for this scene explicitly: search even if it was a photo scene, and replace its clips.
+    s.visual = "video";
+    s.videoQuery ||= s.imageQuery || script.metadata.title;
+    s.inputs = { ...s.inputs, videos: [] };
+  }
+  const logs: string[] = [];
+  const lang = script.language === "en" ? "en" : "vi";
+  await fillSceneVideos(projectDir(slug), scenes, WORDS_PER_SEC[lang], (l) => logs.push(l));
+  for (const s of scenes) if (Array.isArray(s.inputs.videos) && !s.inputs.videos.length) delete s.inputs.videos;
+  await saveScript(slug, script);
+  return { ...(await readProject(slug)), log: logs };
+}));
+
+/**
+ * Check every real photo of a long video against its scene's narration, drop the
+ * ones that don't fit (or carry headlines / other channels' logos), then search
+ * again for scenes left empty and check those too.
+ */
+app.post("/api/projects/:slug/visuals/recheck", h(async (req) => {
+  const slug = param(req, "slug");
+  if (activeJobFor(slug)) throw new HttpError(409, "Dự án đang render.");
+  const job = enqueue("generate", `Kiểm tra lại ảnh: ${slug}`, async (ctx) => {
+    const dir = projectDir(slug);
+    const script = await readScript(slug);
+    let images = await readImages(dir);
+    ctx.progress(1, 3, "Kiểm tra ảnh thật với lời đọc");
+    await vetPhotos(dir, script.scenes, images, ctx.log);
+    const empty = () => script.scenes.filter((s) => s.type !== "outro" && !s.inputs?.image && !(s.inputs?.images as string[] | undefined)?.length && !(s.inputs?.videos as string[] | undefined)?.length);
+    if (empty().length) {
+      ctx.progress(2, 3, `Tìm ảnh mới cho ${empty().length} cảnh trống`);
+      const channel = script.metadata.channelId ? getChannel(script.metadata.channelId) : undefined;
+      if ((channel?.visuals ?? "ai") === "ai") {
+        try {
+          const ai = await fillAiImages(dir, empty(), { style: script.style?.visualStyle ?? "", size: channel?.aiImageSize ?? "2K" }, ctx.log, { fillEmpty: true });
+          images = [...images, ...ai.images];
+          await writeImages(dir, images);
+        } catch (e) {
+          ctx.log(`⚠ Bỏ qua ảnh AI: ${(e as Error).message}`);
+        }
+      }
+      const still = empty();
+      if (still.length) {
+        images = await fillSceneImages(dir, { ...script, scenes: still }, images, ctx.log, { secPerPhoto: 6 });
+        await writeImages(dir, images);
+        ctx.progress(3, 3, "Kiểm tra ảnh mới");
+        await vetPhotos(dir, still, images, ctx.log);
+      }
+    }
+    await saveScript(slug, script);
+    const left = empty().length;
+    ctx.log(left ? `Còn ${left} cảnh không có ảnh đạt — sẽ dùng lại ảnh cảnh bên cạnh` : "✓ Mọi cảnh đều có ảnh đạt");
+    return { slug };
+  }, slug);
+  return { jobId: job.id };
+}));
+
+/**
+ * Redraw one scene's AI illustrations (optionally from a prompt the user edited).
+ * The new images replace the scene's pictures; old files stay in the project's image list.
+ */
+app.post("/api/projects/:slug/ai-images", h(async (req) => {
+  const slug = param(req, "slug");
+  if (activeJobFor(slug)) throw new HttpError(409, "Dự án đang render.");
+  const script = await readScript(slug);
+  const scene = script.scenes.find((s) => s.id === String(req.body?.sceneId ?? ""));
+  if (!scene) throw new HttpError(404, "Không có cảnh này");
+  const prompt = String(req.body?.prompt ?? "").trim();
+  if (prompt) scene.imagePrompts = [prompt];
+  const channel = script.metadata.channelId ? getChannel(script.metadata.channelId) : undefined;
+  const logs: string[] = [];
+  const dir = projectDir(slug);
+  const ai = await fillAiImages(dir, [scene], { style: script.style?.visualStyle ?? "", size: channel?.aiImageSize ?? "2K" }, (l) => logs.push(l), { replace: true });
+  if (!ai.images.length) throw new HttpError(502, logs.join("\n") || "Không tạo được ảnh đạt yêu cầu");
+  scene.visual = "ai";
+  await writeImages(dir, [...(await readImages(dir)), ...ai.images]);
+  await saveScript(slug, script);
+  return { ...(await readProject(slug)), log: logs };
+}));
+
 app.get("/api/projects/:slug", h(async (req) => {
   const slug = param(req, "slug");
   const p = await readProject(slug);
@@ -525,6 +775,7 @@ app.post("/api/projects/:slug/scenes/:id/render", h(async (req) => {
   const script = await readScript(slug);
   const scene = script.scenes.find((s) => s.id === sceneId);
   if (!scene) throw new HttpError(404, "Không có scene này");
+  if (isLongForm(script)) throw new HttpError(400, "Video dài không render thử từng cảnh — bấm Render video.");
   if (activeJobFor(slug)) throw new HttpError(409, "Dự án đang có job chạy.");
   const clipsDir = join(projectDir(slug), "clips");
   await mkdir(clipsDir, { recursive: true });
@@ -643,6 +894,7 @@ app.post("/api/projects/:slug/images/autofill", h(async (req) => {
   const images = await fillSceneImages(dir, script, await readImages(dir), (l) => logs.push(l), {
     onlyScene: req.body?.sceneId || undefined,
     force: !!req.body?.force,
+    secPerPhoto: isLongForm(script) ? 6 : undefined,
   });
   await writeImages(dir, images);
   await saveScript(slug, script);

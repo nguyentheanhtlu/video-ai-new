@@ -1,6 +1,6 @@
 import {
   api, bust, clear, confirmBox, el, estSec, fmtDate, fmtSec, guard, jobLogModal, jobs, liveLog,
-  onJob, openModal, playTts, playUrl, progressBar, statusChip, toast, wordCount,
+  onJob, openModal, playTts, playUrl, progressBar, statusChip, toast, waitJob, wordCount,
 } from "./lib.js";
 import { store } from "./store.js";
 
@@ -30,7 +30,8 @@ function lintScript(script) {
   const errs = [];
   const n = script.scenes.length;
   if (n < 3) errs.push("Cần ít nhất 3 scene.");
-  if (n > 12) errs.push("Tối đa 12 scene.");
+  const maxScenes = script.renderer === "slideshow" ? 250 : 12;
+  if (n > maxScenes) errs.push(`Tối đa ${maxScenes} scene.`);
   if (script.scenes[0]?.type !== "hook") errs.push("Scene đầu tiên phải là hook.");
   if (script.scenes[n - 1]?.type !== "outro") errs.push("Scene cuối cùng phải là outro.");
   const ids = new Set();
@@ -72,7 +73,7 @@ function isColorKey(key, value, slot) {
 }
 
 // ── Photo pickers (project images live in output/<slug>/images/) ──────────
-const imgState = { slug: "", images: [], onChange: null };
+const imgState = { slug: "", images: [], videos: [], onChange: null };
 const imgUrl = (file) => `/files/${imgState.slug}/${file}`;
 
 function thumb(file, extra = {}) {
@@ -134,6 +135,36 @@ function imageEditor(value, onChange, multi) {
   return box;
 }
 
+/** Stock clips of a long-video scene: preview, reorder-free remove, pick from the project's clips. */
+function videoEditor(value, onChange) {
+  const box = el("div", { class: "stack", style: { gap: "8px" } });
+  let cur = Array.isArray(value) ? [...value] : [];
+  const pick = () => new Promise((resolve) => {
+    const grid = el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "10px" } },
+      imgState.videos.length === 0
+        ? el("div", { class: "muted" }, "Dự án chưa có video. Bấm \"🎞 Tìm video\" ở cảnh để tải từ Pixabay.")
+        : imgState.videos.map((v) => el("button", { class: "card tight", style: { padding: "6px", cursor: "pointer" }, onclick: () => { close(); resolve(v.file); } },
+          el("video", { src: imgUrl(v.file), muted: true, preload: "metadata", style: { width: "100%", aspectRatio: "16/9", objectFit: "cover", borderRadius: "6px" } }),
+          el("div", { class: "small muted", style: { textAlign: "left" } }, `${v.query} · ${Math.round(v.duration)}s`))));
+    const close = openModal("Chọn video cho cảnh", grid, []);
+  });
+  const draw = () => clear(box,
+    el("div", { class: "row", style: { alignItems: "flex-start", flexWrap: "wrap" } },
+      cur.length ? cur.map((f, i) => el("div", { class: "stack", style: { gap: "4px", width: "160px" } },
+        el("video", { src: imgUrl(f), muted: true, loop: true, preload: "metadata", onmouseenter: (e) => e.target.play(), onmouseleave: (e) => e.target.pause(),
+          style: { width: "160px", aspectRatio: "16/9", objectFit: "cover", borderRadius: "8px", border: "1px solid var(--line-2)" } }),
+        el("button", { class: "btn ghost sm", onclick: () => { cur.splice(i, 1); onChange(cur.length ? cur : undefined); draw(); } }, "Bỏ"))) : el("span", { class: "small faint" }, "Không có video — cảnh dùng ảnh"),
+      el("button", { class: "btn sm", onclick: async () => {
+        const f = await pick();
+        if (!f || cur.includes(f)) return;
+        cur.push(f);
+        onChange(cur);
+        draw();
+      } }, "+ Thêm video")));
+  draw();
+  return box;
+}
+
 /**
  * Build an editor for one value. `sample` is the template's default for this key
  * (tells us the shape when the scene has no value yet).
@@ -141,6 +172,7 @@ function imageEditor(value, onChange, multi) {
 function valueEditor(key, value, sample, slot, onChange) {
   const shape = value !== undefined ? value : sample;
   const t = slot?.type ?? "";
+  if (t === "video[]" || key === "videos") return { node: videoEditor(value, onChange), wide: true, hint: "chiếu trước ảnh" };
   if (t === "image" || key === "image") return { node: imageEditor(value, onChange, false), wide: true };
   if (t === "image[]" || key === "images") return { node: imageEditor(value, onChange, true), wide: true, hint: "slideshow 2–3 ảnh" };
 
@@ -248,7 +280,7 @@ function inputsForm(scene, tpl, onChange) {
   // Rarely-needed slots (catalog marks them optional) go under a fold so the
   // scene card shows just the photo — the headline is set once for the video.
   const LABELS = { image: "Ảnh của scene", images: "Nhiều ảnh (slideshow)", caption: "Chú thích trên ảnh", headline: "Tiêu đề riêng cho scene này", source_credit: "Ghi nguồn riêng", focus: "Điểm lấy nét ảnh (vd 50% 20%)", cta: "Nút kêu gọi" };
-  const isAdvanced = (k) => { const sl = slots.find((s) => s.name === k); return k === "images" || /optional|usually leave/i.test(sl?.notes ?? ""); };
+  const isAdvanced = (k) => { const sl = slots.find((s) => s.name === k); return (k === "images" && tpl?.id !== "slideshow") || /optional|usually leave/i.test(sl?.notes ?? ""); };
   const field = (k) => {
       const slot = slots.find((s) => s.name === k);
       const ed = valueEditor(k, scene.inputs?.[k], defaults[k], slot, (v) => {
@@ -285,6 +317,11 @@ export async function projectView(root, slug, ctx) {
   let proj = project;
   imgState.slug = slug;
   imgState.images = proj.images ?? [];
+  imgState.videos = proj.videos ?? [];
+  const long = script.renderer === "slideshow";
+  const wps = long && script.language === "en" ? 2.5 : 3.6;
+  // Long videos only use the slideshow scene; template videos never see it.
+  const pickable = templates.filter((t) => (long ? t.id === "slideshow" : !t.virtual));
   let tab = proj.files.includes("video.mp4") ? "result" : "script";
   let sfxPlan = [];
   const collapsed = new Set();
@@ -360,7 +397,31 @@ export async function projectView(root, slug, ctx) {
     }
   }
 
+  function longMetaCard() {
+    const f = (label, input, hint) => el("label", { class: "field" }, el("span", {}, label, hint ? el("em", {}, hint) : null), input);
+    const md = script.metadata;
+    script.style ??= {};
+    const title = el("input", { type: "text", value: md.title, style: { fontWeight: 700 }, oninput: (e) => { md.title = e.target.value; titleInput.value = e.target.value; markDirty(); } });
+    const desc = el("textarea", { rows: 4, oninput: (e) => { md.description = e.target.value; markDirty(); } });
+    desc.value = md.description ?? "";
+    const tags = el("input", { type: "text", value: (md.tags ?? []).join(", "), placeholder: "tag1, tag2, …",
+      oninput: (e) => { md.tags = e.target.value.split(",").map((t) => t.trim()).filter(Boolean); markDirty(); } });
+    const toggle = (key, label) => el("label", { class: "check" },
+      el("input", { type: "checkbox", checked: script.style[key] !== false, onchange: (e) => { script.style[key] = e.target.checked; markDirty(); } }), label);
+    return el("div", { class: "card tight stack" },
+      el("div", { class: "row small muted" },
+        el("span", { class: "chip accent" }, "Video dài 16:9"),
+        el("span", {}, `Kênh: ${md.channel}`),
+        el("span", {}, script.language === "en" ? "🇬🇧 Tiếng Anh" : "🇻🇳 Tiếng Việt"),
+        script.voice?.override ? el("span", {}, `Giọng: ${script.voice.override.engine === "genmax" ? `Genmax ${script.voice.override.genmax?.provider ?? ""}` : script.voice.override.edgeVoice}`) : null),
+      f("Tiêu đề YouTube", title, "≤ 100 ký tự, *từ khoá* chỉ dùng cho thumbnail"),
+      f("Mô tả", desc, "chương, nguồn và tag được thêm tự động khi render"),
+      f("Tags", tags),
+      el("div", { class: "row" }, toggle("subtitles", "In phụ đề lên video"), toggle("music", "Nhạc nền")));
+  }
+
   function metaCard() {
+    if (long) return longMetaCard();
     const f = (label, input) => el("label", { class: "field" }, el("span", {}, label), input);
     const aspect = el("div", { class: "seg" }, ["9:16", "16:9"].map((a) =>
       el("button", { class: script.aspect === a ? "active" : "", onclick: (e) => {
@@ -434,12 +495,28 @@ export async function projectView(root, slug, ctx) {
     if (tab !== "script") return;
     drawErrors();
     clear(scenesBox,
-      script.scenes.map((s, i) => sceneCard(s, i)),
+      script.scenes.map((s, i) => [
+        long && s.chapter && s.chapter !== script.scenes[i - 1]?.chapter ? chapterHead(s.chapter) : null,
+        sceneCard(s, i),
+      ]),
       el("div", { class: "add-scene" },
         el("button", { class: "btn", onclick: () => addScene("body") }, "+ Thêm scene nội dung"),
         el("button", { class: "btn ghost", onclick: () => { script.scenes.forEach((s) => collapsed.add(s)); drawScenes(); } }, "Thu gọn tất cả"),
         el("button", { class: "btn ghost", onclick: () => { collapsed.clear(); drawScenes(); } }, "Mở tất cả"),
       ));
+  }
+
+  /** Editable chapter title shown above the first scene of each chapter (becomes a YouTube chapter). */
+  function chapterHead(id) {
+    const ch = (script.chapters ?? []).find((c) => c.id === id);
+    const n = (script.chapters ?? []).indexOf(ch) + 1;
+    const scenes = script.scenes.filter((s) => s.chapter === id);
+    const sec = scenes.reduce((t, s) => t + wordCount(s.voiceText) / wps + 0.35, 0);
+    return el("div", { class: "row", style: { margin: "14px 0 2px", gap: "10px", alignItems: "center" } },
+      el("span", { class: "chip accent" }, `Chương ${n || "?"}`),
+      el("input", { type: "text", value: ch?.title ?? id, style: { fontWeight: 700, fontSize: "16px", maxWidth: "460px" },
+        oninput: (e) => { if (ch) { ch.title = e.target.value; markDirty(); } } }),
+      el("span", { class: "small faint" }, `${scenes.length} cảnh · ≈ ${fmtSec(sec)}`));
   }
 
   function uniqueId(base) {
@@ -449,13 +526,14 @@ export async function projectView(root, slug, ctx) {
   }
 
   function addScene(type, after) {
-    const tpl = tplById("news-frame") ?? templates.find((t) => t.roles.includes("body"));
+    const tpl = long ? tplById("slideshow") : tplById("news-frame") ?? templates.find((t) => t.roles.includes("body") && !t.virtual);
     // Default to the first photo no scene uses yet.
     const used = new Set(script.scenes.flatMap((s) => [s.inputs?.image, ...(s.inputs?.images ?? [])]));
     const free = imgState.images.find((im) => !used.has(im.file));
     const scene = { id: uniqueId(type), type, voiceText: "", templateId: tpl.id, inputs: free ? { image: free.file } : {} };
     const outroIdx = script.scenes.findIndex((s) => s.type === "outro");
     const idx = after != null ? after + 1 : outroIdx >= 0 ? outroIdx : script.scenes.length;
+    if (long) scene.chapter = script.scenes[Math.max(0, idx - 1)]?.chapter;
     script.scenes.splice(idx, 0, scene);
     markDirty();
     drawScenes();
@@ -477,8 +555,8 @@ export async function projectView(root, slug, ctx) {
     typeSel.value = scene.type;
 
     const tplSel = el("select", { title: "Template", onchange: (e) => changeTemplate(e.target.value) },
-      el("optgroup", { label: `Hợp với ${scene.type}` }, templates.filter((t) => t.roles.includes(scene.type)).map((t) => el("option", { value: t.id }, t.id.replace("frame-", "")))),
-      el("optgroup", { label: "Khác" }, templates.filter((t) => !t.roles.includes(scene.type)).map((t) => el("option", { value: t.id }, t.id.replace("frame-", "")))));
+      el("optgroup", { label: `Hợp với ${scene.type}` }, pickable.filter((t) => t.roles.includes(scene.type)).map((t) => el("option", { value: t.id }, t.id.replace("frame-", "")))),
+      el("optgroup", { label: "Khác" }, pickable.filter((t) => !t.roles.includes(scene.type)).map((t) => el("option", { value: t.id }, t.id.replace("frame-", "")))));
     tplSel.value = scene.templateId;
     if (!tpl) tplSel.prepend(el("option", { value: scene.templateId }, `⚠ ${scene.templateId}`)), (tplSel.value = scene.templateId);
 
@@ -585,7 +663,39 @@ export async function projectView(root, slug, ctx) {
     const clipUrl = `/files/${slug}/clips/scene-${scene.id}.mp4`;
     const clipBox = el("div", { class: `clip-box ${wide ? "wide" : ""}` },
       cache.hasClip ? el("video", { src: bust(clipUrl), controls: true, muted: true, loop: true, preload: "metadata" }) : "Chưa render hình scene này");
-    const aside = el("div", { class: "scene-aside" },
+    const findVideoBtn = el("button", { class: "btn sm", disabled: isActive(), title: "Tìm video minh hoạ trên Pixabay theo từ khoá tiếng Anh", onclick: async (e) => {
+      const b = e.currentTarget;
+      if (isDirty() && !(await save({ quiet: true }))) return;
+      b.disabled = true; b.textContent = "Đang tìm…";
+      try {
+        const fresh = await api("POST", `/api/projects/${slug}/videos/autofill`, { sceneId: scene.id });
+        applyFresh(fresh);
+        toast(fresh.log?.join("\n") || "Đã tìm video", "ok");
+      } catch (err) { toast(err.message, "bad"); b.disabled = false; b.textContent = "🎞 Tìm video"; }
+    } }, "🎞 Tìm video");
+    const videoQuery = el("input", { type: "text", value: scene.videoQuery ?? "", placeholder: "Từ khoá video (tiếng Anh)",
+      oninput: (e) => { scene.videoQuery = e.target.value || undefined; markDirty(); } });
+    const promptTa = el("textarea", { rows: 4, placeholder: "Prompt ảnh AI (tiếng Anh): chủ thể, hành động, bối cảnh, ánh sáng, góc máy…",
+      oninput: (e) => { scene.imagePrompts = e.target.value.trim() ? [e.target.value.trim(), ...(scene.imagePrompts ?? []).slice(1)] : undefined; markDirty(); } });
+    promptTa.value = scene.imagePrompts?.[0] ?? "";
+    const redrawBtn = el("button", { class: "btn sm", disabled: isActive(), title: "Gemini vẽ lại theo prompt, rồi chấm điểm khớp lời đọc — dưới 7/10 tự vẽ lại", onclick: async (e) => {
+      const b = e.currentTarget;
+      if (isDirty() && !(await save({ quiet: true }))) return;
+      b.disabled = true; b.textContent = "Đang vẽ + kiểm tra…";
+      try {
+        const fresh = await api("POST", `/api/projects/${slug}/ai-images`, { sceneId: scene.id, prompt: promptTa.value.trim() });
+        applyFresh(fresh);
+        toast(fresh.log?.join("\n") || "Đã vẽ lại", "ok");
+      } catch (err) { toast(err.message, "bad", 12000); b.disabled = false; b.textContent = "🎨 Vẽ lại ảnh AI"; }
+    } }, "🎨 Vẽ lại ảnh AI");
+    const visualLabel = { video: "AI chọn: video minh hoạ", ai: "AI chọn: ảnh AI minh hoạ", photo: "AI chọn: ảnh thật" }[scene.visual ?? "photo"] ?? "";
+    const aside = long ? el("div", { class: "scene-aside" },
+      el("div", { class: "small faint" }, visualLabel),
+      promptTa, redrawBtn,
+      el("details", {}, el("summary", { class: "small" }, "Video stock"), el("div", { class: "stack", style: { gap: "6px", marginTop: "6px" } }, videoQuery, findVideoBtn)),
+      cache.hasVoice ? el("audio", { src: bust(`/files/${slug}/voice/scene-${scene.id}.mp3`), controls: true, style: { width: "100%", height: "32px" } }) : null,
+      cache.hasVoice ? el("span", { class: "chip ok" }, "giọng ✓") : el("span", { class: "chip" }, "giọng –"),
+    ) : el("div", { class: "scene-aside" },
       clipBox,
       el("button", { class: "btn sm", disabled: isActive(), onclick: () => renderScene(scene) }, cache.hasClip ? "↻ Render lại hình" : "🖼 Render thử hình"),
       cache.hasVoice ? el("audio", { src: bust(`/files/${slug}/voice/scene-${scene.id}.mp3`), controls: true, style: { width: "100%", height: "32px" } }) : null,
@@ -622,8 +732,8 @@ export async function projectView(root, slug, ctx) {
                 toast(fresh.log?.join("\n") || "Đã thêm ảnh", "ok");
               } catch (err) { toast(err.message, "bad"); b.disabled = false; b.textContent = "🔍 Tìm thêm ảnh"; }
             } }, "🔍 Tìm thêm ảnh")) : null,
-          el("div", { class: "section-label" }, "Hiệu ứng âm thanh"),
-          el("div", { class: "row" }, el("div", { style: { width: "260px" } }, sfxSel), sfxExtra),
+          long ? null : el("div", { class: "section-label" }, "Hiệu ứng âm thanh"),
+          long ? null : el("div", { class: "row" }, el("div", { style: { width: "260px" } }, sfxSel), sfxExtra),
         ),
         aside,
       ));
@@ -634,10 +744,12 @@ export async function projectView(root, slug, ctx) {
   const jobBox = el("div");
   function drawSideStats() {
     const words = script.scenes.reduce((n, s) => n + wordCount(s.voiceText), 0);
-    const sec = script.scenes.reduce((n, s) => n + estSec(s.voiceText), 0) + script.scenes.length * 0.3 + 3;
+    const sec = long
+      ? script.scenes.reduce((n, s) => n + wordCount(s.voiceText) / wps + 0.35, 0) + 3
+      : script.scenes.reduce((n, s) => n + estSec(s.voiceText), 0) + script.scenes.length * 0.3 + 3;
     clear(statsBox, el("div", { class: "grid-2", style: { gap: "8px" } },
       stat("Scene", script.scenes.length), stat("Số từ", words),
-      stat("Thời lượng ước tính", fmtSec(sec)), stat("Khung hình", script.aspect)));
+      stat("Thời lượng ước tính", fmtSec(sec)), long ? stat("Chương", (script.chapters ?? []).length) : stat("Khung hình", script.aspect)));
   }
   const stat = (label, value) => el("div", { class: "card tight", style: { padding: "10px 12px" } },
     el("div", { class: "small faint" }, label), el("div", { style: { fontWeight: 700, fontSize: "18px" } }, value));
@@ -682,11 +794,26 @@ export async function projectView(root, slug, ctx) {
     const hasVideo = proj.files.includes("video.mp4");
     clear(sideBox,
       el("div", { class: "card stack" }, el("h3", {}, "Tổng quan"), statsBox,
-        el("div", { class: "small muted" }, "Mẹo: sửa lời đọc chỉ tạo lại giọng scene đó; sửa chữ/template chỉ render lại hình scene đó — phần còn lại dùng cache.")),
+        el("div", { class: "small muted" }, long
+          ? "Mẹo: sửa lời đọc chỉ tạo lại giọng cảnh đó; ảnh/video đã render được dùng lại — chỉ cảnh thay đổi mới render lại."
+          : "Mẹo: sửa lời đọc chỉ tạo lại giọng scene đó; sửa chữ/template chỉ render lại hình scene đó — phần còn lại dùng cache.")),
       jobBox,
       hasVideo ? el("div", { class: "card stack" },
         el("div", { class: "row between" }, el("h3", {}, "Video hiện tại"), el("button", { class: "btn sm", onclick: () => { tab = "result"; drawTabs(); drawBody(); } }, "Mở")),
         el("div", { class: "video-wrap" }, el("video", { src: bust(`/files/${slug}/video.mp4`), controls: true, preload: "metadata" }))) : null,
+      long ? el("div", { class: "card stack" },
+        el("h3", {}, "Hình ảnh"),
+        el("p", { class: "small muted", style: { margin: 0 } }, "Gemini xem lại từng ảnh thật so với lời đọc, loại ảnh lệch nội dung hoặc có chữ/logo kênh khác đè lên, rồi tìm ảnh mới cho cảnh bị trống."),
+        el("button", { class: "btn sm", disabled: isActive(), onclick: async (e) => {
+          if (isDirty() && !(await save({ quiet: true }))) return;
+          e.currentTarget.disabled = true;
+          const { jobId } = await guard(() => api("POST", `/api/projects/${slug}/visuals/recheck`), "Đang kiểm tra ảnh…");
+          drawJob();
+          const job = await waitJob(jobId);
+          if (job.status !== "done") return toast(job.error ?? "Kiểm tra ảnh lỗi", "bad", 10000);
+          applyFresh(await api("GET", `/api/projects/${slug}`));
+          toast("Đã kiểm tra lại ảnh — render lại để áp dụng", "ok");
+        } }, "🔍 Kiểm tra lại toàn bộ ảnh")) : null,
       el("div", { class: "card stack" },
         el("h3", {}, "Cache"),
         el("div", { class: "row" },
@@ -706,6 +833,7 @@ export async function projectView(root, slug, ctx) {
     const dl = (file, label, desc) => f.includes(file)
       ? el("a", { href: `/files/${slug}/${file}`, download: `${slug}-${file}` }, el("span", {}, el("b", {}, label), el("div", { class: "small muted" }, desc)), "⬇")
       : null;
+    if (long) return youtubeResult(f, dl, last);
     return el("div", { class: "editor" },
       el("div", { class: "stack" },
         el("div", { class: "row", style: { alignItems: "flex-start", gap: "16px" } },
@@ -732,10 +860,45 @@ export async function projectView(root, slug, ctx) {
       ));
   }
 
+  /** Long video: player, thumbnail, and everything to paste into YouTube Studio. */
+  function youtubeResult(f, dl, last) {
+    const descBox = el("textarea", { rows: 12, readonly: true, style: { fontFamily: "inherit" } }, "Đang tải…");
+    if (f.includes("description.txt")) fetch(bust(`/files/${slug}/description.txt`)).then((r) => r.text()).then((t) => { descBox.value = t; });
+    const copy = (text, what) => navigator.clipboard.writeText(text).then(() => toast(`Đã copy ${what}`, "ok"));
+    const ytTitle = script.metadata.title.replace(/\*/g, "").slice(0, 100);
+    return el("div", { class: "editor" },
+      el("div", { class: "stack" },
+        el("div", { class: "video-wrap" }, el("video", { src: bust(`/files/${slug}/video.mp4`), controls: true })),
+        el("div", { class: "card stack" },
+          el("div", { class: "row between" }, el("h3", {}, "Tiêu đề"), el("button", { class: "btn sm", onclick: () => copy(ytTitle, "tiêu đề") }, "Copy")),
+          el("div", { style: { fontWeight: 700 } }, ytTitle),
+          el("div", { class: "row between" }, el("h3", {}, "Mô tả (kèm chương + nguồn)"), el("button", { class: "btn sm", onclick: () => copy(descBox.value, "mô tả") }, "Copy")),
+          descBox,
+          (script.metadata.tags ?? []).length ? el("div", { class: "row between" },
+            el("span", { class: "small" }, (script.metadata.tags ?? []).join(", ")),
+            el("button", { class: "btn sm", onclick: () => copy((script.metadata.tags ?? []).join(", "), "tags") }, "Copy tags")) : null)),
+      el("div", { class: "side-sticky" },
+        f.includes("thumbnail.jpg") ? el("div", { class: "card stack" }, el("h3", {}, "Thumbnail"),
+          el("img", { src: bust(`/files/${slug}/thumbnail.jpg`), style: { width: "100%", borderRadius: "8px" } })) : null,
+        el("div", { class: "card stack" },
+          el("h3", {}, "Tải về"),
+          el("div", { class: "dl-list" },
+            dl("video.mp4", "video.mp4", "Video 1920×1080, phụ đề đã in sẵn"),
+            dl("thumbnail.jpg", "thumbnail.jpg", "Thumbnail 1280×720"),
+            dl("subtitles.srt", "subtitles.srt", "Phụ đề — tải lên YouTube (Phụ đề → Tải tệp lên)"),
+            dl("description.txt", "description.txt", "Mô tả + mục lục chương + nguồn"),
+            dl("voice.mp3", "voice.mp3", "Riêng giọng đọc"),
+            dl("youtube.json", "youtube.json", "Metadata cho bước đăng tự động"))),
+        last ? el("div", { class: "card stack small" },
+          el("div", {}, `Render lúc ${fmtDate(last.at)}`),
+          last.durationSec ? el("div", {}, `Thời lượng: ${fmtSec(last.durationSec)}`) : null) : null));
+  }
+
   /** Replace local state with a project returned by the server (script + images + cache). */
   function applyFresh(fresh) {
     proj = fresh;
     imgState.images = fresh.images ?? [];
+    imgState.videos = fresh.videos ?? [];
     script = clone(fresh.script);
     saved = JSON.stringify(script);
     markDirty();

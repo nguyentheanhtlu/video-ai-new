@@ -18,6 +18,10 @@ export const SETTING_KEYS = [
   "CLAUDE_MODEL",
   "GEMINI_API_KEY",
   "GEMINI_MODEL",
+  "GEMINI_IMAGE_MODEL",
+  "GEMINI_VIDEO_MODEL",
+  "PIXABAY_API_KEY",
+  "PEXELS_API_KEY",
   "CHANNEL_NAME",
   "CHANNEL_URL",
   "CHANNEL_HANDLE",
@@ -32,7 +36,7 @@ export const SETTING_KEYS = [
 ] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
-const SECRET_KEYS: SettingKey[] = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GENMAX_API_KEY"];
+const SECRET_KEYS: SettingKey[] = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GENMAX_API_KEY", "PIXABAY_API_KEY", "PEXELS_API_KEY"];
 
 export const DEFAULTS: Record<SettingKey, string> = {
   TTS_ENGINE: "genmax",
@@ -49,6 +53,10 @@ export const DEFAULTS: Record<SettingKey, string> = {
   CLAUDE_MODEL: "claude-opus-5-5",
   GEMINI_API_KEY: "",
   GEMINI_MODEL: "auto",
+  GEMINI_IMAGE_MODEL: "gemini-nano-banana-2.1",
+  GEMINI_VIDEO_MODEL: "gemini-omni-1.2-flash",
+  PIXABAY_API_KEY: "",
+  PEXELS_API_KEY: "",
   CHANNEL_NAME: "AI Coding",
   CHANNEL_URL: "https://aicodingvn.vercel.app/",
   CHANNEL_HANDLE: "",

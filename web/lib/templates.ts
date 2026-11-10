@@ -40,7 +40,27 @@ export interface TemplateInfo {
   defaults: Record<string, unknown>;
   aspects: string[];
   docs: string;
+  /** Not a HyperFrames folder: the long-form ffmpeg renderer's scene type (hidden from the gallery). */
+  virtual?: boolean;
 }
+
+/** Scenes of long-form videos: photos + stock clips, no template HTML. */
+export const SLIDESHOW_TEMPLATE: TemplateInfo = {
+  id: "slideshow",
+  name: "Video dài · ảnh + video",
+  generated: false,
+  virtual: true,
+  roles: ["hook", "body", "outro"],
+  role: "Video dài 16:9",
+  bestFor: "Ảnh zoom chậm + video minh hoạ, cắt theo lời đọc, chuyển cảnh mờ dần",
+  slots: [
+    { name: "videos", type: "video[]", max: 3, limit: "≤3 items", notes: "video minh hoạ (Pixabay), chiếu trước ảnh" },
+    { name: "images", type: "image[]", max: 4, limit: "≤4 items", notes: "ảnh của cảnh, mỗi ảnh ~5 giây" },
+  ],
+  defaults: {},
+  aspects: ["16:9"],
+  docs: "",
+};
 
 const ASPECT_FILES: Record<string, string> = {
   "9:16": "compositions/portrait.html",
@@ -170,6 +190,7 @@ export function listTemplates(): TemplateInfo[] {
       docs: section,
     });
   }
+  list.push(SLIDESHOW_TEMPLATE);
   cache = { at: Date.now(), list };
   return list;
 }

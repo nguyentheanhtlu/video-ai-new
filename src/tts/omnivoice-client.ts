@@ -1,9 +1,12 @@
 import axios, { AxiosError } from "axios";
 import { writeFile } from "node:fs/promises";
 import type { TtsClient } from "./tts-client.js";
+import type { VoiceOverride } from "./voice.js";
 
 export interface OmniVoiceOpts {
   endpoint: string; // e.g. "http://127.0.0.1:8123"
+  /** Script's own voice (channel profile); the server's global voice when absent. */
+  voice?: VoiceOverride;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -22,7 +25,7 @@ export class OmniVoiceClient implements TtsClient {
       try {
         const resp = await axios.post<ArrayBuffer>(
           `${this.cfg.endpoint}/tts`,
-          { text },
+          this.cfg.voice ? { text, voice: this.cfg.voice } : { text },
           { headers: { "Content-Type": "application/json", Accept: "audio/mpeg" }, responseType: "arraybuffer", timeout: 180000 },
         );
         await writeFile(audioOutPath, Buffer.from(resp.data));
