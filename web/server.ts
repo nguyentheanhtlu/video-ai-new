@@ -53,6 +53,23 @@ import { deleteChannel, getChannel, listChannels, saveChannel, type Channel } fr
 import { generateLongScript, WORDS_PER_SEC } from "./lib/long-script.js";
 import { fillSceneVideos, readVideos, stockConfigured, stockProviders, writeVideos } from "./lib/stock-video.js";
 import { aiHookClip, fillAiImages, vetPhotos } from "./lib/ai-visuals.js";
+import {
+  authUrl,
+  disconnect,
+  enqueueUpload,
+  finishAuth,
+  listUploads,
+  nextSlot,
+  oauthConfigured,
+  publicConnection,
+  quota,
+  removeUpload,
+  retryUpload,
+  startUploadWorker,
+  uploadLog,
+  uploadsFor,
+  ytBus,
+} from "./lib/youtube.js";
 
 const PORT = Number(process.env.WEB_PORT ?? 3210);
 const TTS_ENDPOINT = new URL(process.env.OMNIVOICE_ENDPOINT ?? "http://127.0.0.1:8123");
@@ -374,6 +391,76 @@ app.delete("/api/channels/:id", h(async (req) => {
   return listChannels();
 }));
 
+// ── YouTube (official Data API v3: OAuth per channel + upload queue) ─────────
+// Google sends the browser back here after sign-in (loopback redirect of a Desktop-app client).
+const ytRedirect = () => `http://127.0.0.1:${PORT}/api/youtube/callback`;
+const ytPage = (title: string, body: string) =>
+  `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:system-ui;max-width:560px;margin:60px auto;line-height:1.6">` +
+  `<h2>${title}</h2><p>${body}</p><p><a href="http://localhost:${PORT}/#/channels">← Về trang Kênh</a></p></body>`;
+const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+app.get("/api/youtube/status", h(() => ({
+  configured: oauthConfigured(),
+  quota: quota(),
+  connections: Object.fromEntries(listChannels().map((c) => [c.id, publicConnection(c.id)])),
+  nextSlots: Object.fromEntries(listChannels().map((c) => [c.id, nextSlot(c) ?? null])),
+  uploads: listUploads(),
+  log: uploadLog(),
+})));
+
+app.get("/api/youtube/connect", h((req, res) => {
+  res.redirect(authUrl(String(req.query.channel ?? ""), ytRedirect()));
+}));
+
+app.get("/api/youtube/callback", async (req, res) => {
+  const { code, state, error } = req.query as Record<string, string | undefined>;
+  try {
+    if (error) throw new Error(error === "access_denied" ? "Bạn đã bấm Huỷ / không cấp quyền." : error);
+    if (!code || !state) throw new Error("Thiếu mã đăng nhập từ Google.");
+    const r = await finishAuth(code, state);
+    res.redirect(`http://localhost:${PORT}/#/channels`);
+    console.log(`  [YouTube] Đã kết nối kênh ${r.channelId} → ${r.youtubeTitle}`);
+  } catch (e) {
+    res.status(400).send(ytPage("Kết nối YouTube thất bại", escapeHtml((e as Error).message)));
+  }
+});
+
+app.post("/api/youtube/disconnect/:channel", h(async (req) => {
+  await disconnect(param(req, "channel"));
+  return { ok: true };
+}));
+
+app.post("/api/youtube/uploads", h(async (req) => {
+  const b = req.body ?? {};
+  const privacy = ["public", "unlisted", "private"].includes(b.privacy) ? b.privacy : undefined;
+  return enqueueUpload({
+    slug: String(b.slug ?? ""),
+    channelId: String(b.channelId ?? ""),
+    privacy,
+    publishAt: b.publishAt ? String(b.publishAt) : undefined,
+  });
+}));
+app.post("/api/youtube/uploads/:id/retry", h((req) => retryUpload(param(req, "id"))));
+app.delete("/api/youtube/uploads/:id", h(async (req) => {
+  await removeUpload(param(req, "id"));
+  return { ok: true };
+}));
+
+/** After a render: queue the upload if the video's channel has auto-upload on. */
+async function autoUpload(slug: string, log: (l: string) => void) {
+  try {
+    const script = await readScript(slug);
+    const ch = script.metadata.channelId ? getChannel(script.metadata.channelId) : undefined;
+    if (!ch?.autoUpload) return;
+    if (!publicConnection(ch.id)) return log(`⚠ Kênh "${ch.name}" bật tự đăng nhưng chưa kết nối YouTube — bỏ qua.`);
+    if (uploadsFor(slug).some((u) => u.channelId === ch.id && u.status !== "failed")) return;
+    const item = await enqueueUpload({ slug, channelId: ch.id, publishAt: "auto", auto: true });
+    log(`✓ Đã xếp hàng đăng YouTube → ${ch.name}${item.publishAt ? `, công khai lúc ${new Date(item.publishAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : ""}`);
+  } catch (e) {
+    log(`⚠ Không xếp hàng đăng YouTube được: ${(e as Error).message}`);
+  }
+}
+
 /** The global Settings as a channel, for long videos made without a channel profile. */
 function settingsChannel(): Channel {
   const genmax = genmaxFromEnv();
@@ -391,6 +478,11 @@ function settingsChannel(): Channel {
     visuals: "ai",
     aiImageSize: "2K",
     aiHookVideo: false,
+    autoUpload: false,
+    publishTimes: [],
+    privacy: "public",
+    categoryId: "22",
+    declareSynthetic: true,
   };
 }
 
@@ -759,6 +851,7 @@ function enqueuePipeline(slug: string) {
     const durationSec = await getDurationSec(video);
     makeThumb(dir);
     await writeMeta(slug, { lastRender: { at: new Date().toISOString(), ok: true, durationSec } });
+    await autoUpload(slug, ctx.log);
     return { slug, durationSec };
   }, slug);
 }
@@ -992,13 +1085,16 @@ app.get("/api/events", (req, res) => {
   const send = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const onUpdate = (job: unknown) => send("job", job);
   const onLog = (id: string, line: string) => send("log", { id, line });
+  const onYt = () => send("youtube", {});
   bus.on("update", onUpdate);
   bus.on("log", onLog);
+  ytBus.on("change", onYt);
   const ping = setInterval(() => res.write(": ping\n\n"), 20000);
   req.on("close", () => {
     clearInterval(ping);
     bus.off("update", onUpdate);
     bus.off("log", onLog);
+    ytBus.off("change", onYt);
   });
 });
 
@@ -1031,7 +1127,10 @@ async function main() {
     console.log(`  FFmpeg: ${ffmpegDir ?? "KHÔNG TÌM THẤY — cài FFmpeg trước khi render"}`);
     const par = parallelPlan();
     console.log(`  Song song: ${par.cores} luồng CPU / ${par.memGb} GB RAM → ${par.jobs} video cùng lúc × ${par.scenes} scene × ${par.workers} worker`);
+    const connected = listChannels().filter((c) => publicConnection(c.id)).length;
+    console.log(`  YouTube: ${oauthConfigured() ? `${connected}/${listChannels().length} kênh đã kết nối` : "chưa có credentials/client_secret.json"}`);
   });
+  await startUploadWorker();
 }
 
 main().catch((e) => {

@@ -132,6 +132,8 @@ export async function connectEvents() {
     jobs.set(job.id, job);
     jobListeners.forEach((fn) => fn(job, prev));
   });
+  // Upload queue / quota / connections changed: views listening re-fetch /api/youtube/status.
+  es.addEventListener("youtube", () => window.dispatchEvent(new Event("youtube")));
   es.addEventListener("log", (e) => {
     const { id, line } = JSON.parse(e.data);
     logListeners.forEach((fn) => fn(id, line));
@@ -144,6 +146,28 @@ export async function connectEvents() {
     };
   };
 }
+
+/** Call fn on every YouTube change (throttled); returns an unsubscribe. */
+export function onYoutube(fn) {
+  let t = null;
+  const h = () => {
+    clearTimeout(t);
+    t = setTimeout(fn, 400);
+  };
+  window.addEventListener("youtube", h);
+  return () => {
+    clearTimeout(t);
+    window.removeEventListener("youtube", h);
+  };
+}
+
+export const UPLOAD_STATUS = {
+  pending: ["chip", "Chờ đăng"],
+  uploading: ["chip info", "Đang tải lên"],
+  done: ["chip ok", "Đã đăng"],
+  failed: ["chip bad", "Lỗi"],
+};
+export const fmtVN = (iso) => new Date(iso).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
 
 /** Wait until a job finishes; resolves with the final job. */
 export function waitJob(id) {

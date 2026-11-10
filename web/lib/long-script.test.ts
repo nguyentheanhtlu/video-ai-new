@@ -52,6 +52,11 @@ const channel = {
   visuals: "ai" as const,
   aiImageSize: "2K" as const,
   aiHookVideo: false,
+  autoUpload: false,
+  publishTimes: [],
+  privacy: "public" as const,
+  categoryId: "22",
+  declareSynthetic: true,
 };
 
 describe("generateLongScript", () => {

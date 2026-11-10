@@ -29,6 +29,15 @@ export const ChannelSchema = z.object({
   aiImageSize: z.enum(["1K", "2K"]).default("2K"),
   /** Animate the opening image into a short clip (Gemini Omni, ~0.1 USD/s). */
   aiHookVideo: z.boolean().default(false),
+  /** Upload to YouTube by itself as soon as a video of this channel finishes rendering. */
+  autoUpload: z.boolean().default(false),
+  /** Daily publish times, Vietnam time (HH:MM). Each video takes the next free one; empty = publish right after upload. */
+  publishTimes: z.array(z.string().regex(/^\d{2}:\d{2}$/)).max(24).default(["19:00"]),
+  privacy: z.enum(["public", "unlisted", "private"]).default("public"),
+  /** YouTube category: 22 People & Blogs, 25 News & Politics, 17 Sports, 24 Entertainment, 27 Education, 28 Science & Tech. */
+  categoryId: z.string().regex(/^\d+$/).default("22"),
+  /** Tick YouTube's "altered or synthetic content" box on every upload (AI voice / AI images). */
+  declareSynthetic: z.boolean().default(true),
   createdAt: z.string().optional(),
 });
 export type Channel = z.infer<typeof ChannelSchema>;
