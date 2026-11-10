@@ -8,6 +8,7 @@ import { ROOT, TEMPLATES_DIR } from "./paths.js";
 import { validateScript, type Script } from "./projects.js";
 import { getSetting } from "./settings.js";
 import { getTemplate, type TemplateInfo } from "./templates.js";
+import { getStyle, styleOverride } from "./script-styles.js";
 
 export interface GenerateOptions {
   /**
@@ -21,6 +22,8 @@ export interface GenerateOptions {
   extraInstructions?: string;
   /** Template generated from a sample video; every scene uses it. Omit for the news frame. */
   templateId?: string;
+  /** Script style (news, affiliate, review…); see script-styles.ts. */
+  scriptStyle?: string;
 }
 
 /** `images` are base64 JPEGs shown to the model along with the text. */
@@ -53,12 +56,19 @@ function styleRules(tpl: TemplateInfo): string[] {
   ].filter(Boolean);
 }
 
-function systemPrompt(tpl?: TemplateInfo): string {
+/** With a channel idea, the article is optional reference: this overrides the "stick to the article" rules above. */
+const IDEA_OVERRIDE = [
+  "",
+  "# Ý TƯỞNG CỦA KÊNH — GHI ĐÈ QUY TẮC NỘI DUNG Ở TRÊN",
+  "Người dùng đưa Ý TƯỞNG CỦA KÊNH. Video phải kể đúng ý tưởng đó (câu chuyện, trọng tâm, góc nhìn, giọng, thứ tự ý), KHÔNG phải tóm tắt bài báo. Mọi quy định kiểu \"chỉ dùng thông tin trong bài / không thêm dữ kiện mới\" ở trên không áp dụng: bài báo hay văn bản đi kèm chỉ là tài liệu tham khảo không bắt buộc, được tự phát triển bằng kiến thức chung, phân tích, cảm xúc. Chỉ tránh bịa số liệu, ngày tháng hay câu nói cụ thể gán cho người thật. Các quy tắc kỹ thuật (schema, template, slot, độ dài, quy tắc đọc số cho TTS) vẫn giữ nguyên.",
+];
+
+function systemPrompt(tpl?: TemplateInfo, idea = false, style?: string): string {
   const skill = readFileSync(join(ROOT, ".claude", "skills", "create-template-video", "SKILL.md"), "utf8");
   const rules = skill.slice(skill.indexOf("### Step 4"), skill.indexOf("### Step 7")).trim();
   const catalog = readFileSync(join(TEMPLATES_DIR, "CATALOG.md"), "utf8");
   return [
-    "Bạn là biên tập viên viết kịch bản video tin tức ngắn tiếng Việt. Nhiệm vụ: đọc bài báo người dùng gửi và viết `script.json` cho pipeline render template HyperFrames.",
+    `Bạn là ${getStyle(style).role} (video ngắn). Nhiệm vụ: từ nội dung người dùng gửi, viết script.json cho pipeline render template HyperFrames.`,
     "Chỉ trả về MỘT object JSON hợp lệ (không markdown, không giải thích). Các bước về WebFetch/Write/Bash trong quy tắc dưới đây do hệ thống lo — bạn chỉ viết JSON.",
     "",
     "# Quy tắc viết kịch bản",
@@ -66,7 +76,11 @@ function systemPrompt(tpl?: TemplateInfo): string {
     "",
     "# Danh mục template (templates/CATALOG.md)",
     catalog,
+    // Order matters, later sections win: news base rules → script style → the
+    // sample template's own structure/voice (more specific) → the channel idea.
+    ...styleOverride(style),
     ...(tpl ? styleRules(tpl) : []),
+    ...(idea ? IDEA_OVERRIDE : []),
     ...(getSetting("SCRIPT_LANGUAGE") === "en"
       ? [
           "",
@@ -96,12 +110,22 @@ function userPrompt(article: Article, o: GenerateOptions, images: ProjectImage[]
   const imgList = images.length
     ? images.map((im) => `- ${im.file} (${im.width}x${im.height})${im.caption ? ` — chú thích gốc: "${im.caption}"` : ""}`).join("\n")
     : "(không có ảnh — bỏ trống image, khung sẽ dùng nền màu kênh)";
+  // The user's brief leads and outranks the article: it sets focus and angle,
+  // the article only supplies facts (as a buried one-liner it was mostly ignored).
+  const brief = o.extraInstructions?.trim()
+    ? [
+        "## Ý TƯỞNG CỦA KÊNH — VIẾT THEO ĐÚNG Ý TƯỞNG NÀY",
+        o.extraInstructions.trim(),
+        "→ Đây là nội dung video: hook, tiêu đề và mọi scene kể đúng ý tưởng này. Phần \"Nội dung\" bên dưới chỉ là tài liệu tham khảo không bắt buộc — lấy chi tiết nào giúp ý tưởng hay hơn, không tóm tắt hay đi theo bố cục của nó.",
+        "",
+      ]
+    : [];
   return [
+    ...brief,
     `Độ dài: ${len}`,
     `aspect: "${o.aspect}"`,
     `Tên kênh (metadata.channel, brand, footer, outro brand_name): "${o.channel}"`,
     `URL kênh (outro primary_url): "${o.channelUrl}"`,
-    o.extraInstructions ? `Yêu cầu thêm của người dùng: ${o.extraInstructions}` : "",
     "",
     "Ảnh của bài đã tải về (CHỈ dùng đúng các đường dẫn này; gán cho scene có nội dung khớp chú thích — mỗi ảnh tối đa 2 scene, không bắt buộc scene nào cũng có ảnh bài vì hệ thống sẽ tự tìm thêm theo imageQuery):",
     imgList,
@@ -379,7 +403,7 @@ export async function generateScript(
   const { provider, call, model } = activeModel();
   const tpl = o.templateId ? getTemplate(o.templateId) : undefined;
   if (o.templateId && !tpl) throw new Error(`Không có template "${o.templateId}"`);
-  const system = systemPrompt(tpl);
+  const system = systemPrompt(tpl, !!o.extraInstructions?.trim(), o.scriptStyle);
   const turns: Turn[] = [{ role: "user", text: userPrompt(article, o, images, tpl) }];
 
   for (let attempt = 1; attempt <= 3; attempt++) {

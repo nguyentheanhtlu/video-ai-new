@@ -6,6 +6,7 @@ import type { Channel } from "./channels.js";
 import type { ProjectImage } from "./images.js";
 import { generateJson } from "./llm.js";
 import { todayVN } from "./projects.js";
+import { styleOverride } from "./script-styles.js";
 
 /**
  * Long-form (5–15 min) script in two passes, so a 10-minute video stays
@@ -22,6 +23,8 @@ export interface LongOptions {
   extraInstructions?: string;
   /** Topic / angle typed by the user (with or without source links). */
   prompt?: string;
+  /** Script style (news, affiliate, review…); defaults to the channel's. */
+  scriptStyle?: string;
 }
 
 const Outline = z.object({
@@ -63,7 +66,15 @@ const LANG_RULES = {
   ],
 };
 
-function sourceBlock(articles: Article[], maxChars = 45000): string {
+function sourceBlock(articles: Article[], maxChars = 45000, brief = false): string {
+  if (brief) {
+    if (!articles.length) return "(Không có tài liệu tham khảo — viết hoàn toàn theo ý tưởng của kênh.)";
+    const per = Math.floor(maxChars / articles.length);
+    return [
+      "## TÀI LIỆU THAM KHẢO (không bắt buộc — chỉ lấy chi tiết nào giúp ý tưởng của kênh hay hơn; KHÔNG đi theo nội dung hay bố cục của nó)",
+      ...articles.map((a, i) => `### Tham khảo ${i + 1}: ${a.title}\n${a.url || "(văn bản dán tay)"}\n${a.content.slice(0, per)}`),
+    ].join("\n\n");
+  }
   if (!articles.length) return "(Không có bài nguồn — dựa vào chủ đề người dùng đưa. Chỉ nêu kiến thức phổ biến, chắc chắn; KHÔNG bịa số liệu, trích dẫn, ngày tháng cụ thể.)";
   const per = Math.floor(maxChars / articles.length);
   return articles
@@ -71,10 +82,27 @@ function sourceBlock(articles: Article[], maxChars = 45000): string {
     .join("\n\n");
 }
 
+/**
+ * The user's own brief comes first and wins: it sets the angle, focus and
+ * structure; the sources only supply facts for it. (Listed as one line among
+ * the channel info, the model used to follow the article's structure instead.)
+ */
+function briefBlock(o: LongOptions): string {
+  if (!o.prompt) return "";
+  return [
+    "## Ý TƯỞNG CỦA KÊNH — VIẾT THEO ĐÚNG Ý TƯỞNG NÀY",
+    o.prompt,
+    "",
+    "→ Đây là nội dung video. Ý tưởng quyết định câu chuyện, trọng tâm, góc nhìn, bố cục và giọng; nếu nêu số chương, thứ tự ý, độ dài, giọng điệu hay điều cần tránh thì làm ĐÚNG như vậy.",
+    "→ Tự phát triển ý tưởng bằng kiến thức của bạn. Tài liệu tham khảo (nếu có) chỉ để lấy thêm chi tiết khi hữu ích — không bắt buộc dùng, không đi theo nó.",
+    "",
+  ].join("\n");
+}
+
 function channelBlock(o: LongOptions): string {
   return [
+    briefBlock(o),
     `Kênh: "${o.channel.name}"${o.channel.niche ? ` — chủ đề & phong cách: ${o.channel.niche}` : ""}`,
-    o.prompt ? `Yêu cầu / góc nhìn của người dùng: ${o.prompt}` : "",
     o.extraInstructions ? `Yêu cầu thêm: ${o.extraInstructions}` : "",
   ].filter(Boolean).join("\n");
 }
@@ -83,12 +111,17 @@ async function makeOutline(articles: Article[], o: LongOptions, totalWords: numb
   const lang = o.channel.language;
   const nCh = Math.min(12, Math.max(4, Math.round(o.minutes * 0.9)));
   const system = [
-    "Bạn là biên tập viên trưởng của một kênh YouTube video dài (khung ngang 16:9). Nhiệm vụ: lên DÀN Ý cho một video từ các nguồn được đưa.",
+    o.prompt
+      ? "Bạn là biên tập viên trưởng của một kênh YouTube video dài (khung ngang 16:9). Nhiệm vụ: lên DÀN Ý cho một video THEO Ý TƯỞNG CỦA KÊNH (không phải tóm tắt tài liệu)."
+      : "Bạn là biên tập viên trưởng của một kênh YouTube video dài (khung ngang 16:9). Nhiệm vụ: lên DÀN Ý cho một video từ các nguồn được đưa.",
     "Chỉ trả về MỘT object JSON hợp lệ, không markdown.",
     ...LANG_RULES[lang],
+    ...styleOverride(o.scriptStyle ?? o.channel.scriptStyle),
     "",
     "Quy tắc nội dung:",
-    "- Chỉ dùng dữ kiện có trong nguồn. Khi nguồn ngắn, mở rộng bằng bối cảnh, giải thích, so sánh, ý nghĩa, câu hỏi mở — KHÔNG bịa số liệu, trích dẫn, tên người.",
+    o.prompt
+      ? "- Video đi theo Ý TƯỞNG CỦA KÊNH: mọi chương phục vụ ý tưởng; tiêu đề, mở đầu, kết luận xoay quanh đúng ý tưởng đó. Tự do phát triển bằng kiến thức chung, phân tích, cảm xúc, liên hệ; chỉ tránh bịa số liệu, ngày tháng hay câu nói cụ thể gán cho người thật."
+      : "- Chỉ dùng dữ kiện có trong nguồn. Khi nguồn ngắn, mở rộng bằng bối cảnh, giải thích, so sánh, ý nghĩa, câu hỏi mở — KHÔNG bịa số liệu, trích dẫn, tên người.",
     "- Chương đầu là phần mở (hook mạnh trong 15 giây đầu: vấn đề / điều bất ngờ / câu hỏi), chương cuối là tổng kết + nhận định.",
     "- Mỗi chương có 2–5 ý cụ thể (points), không trùng ý giữa các chương.",
     "- title: tiêu đề YouTube hấp dẫn, ≤ 90 ký tự, đúng sự thật, có thể đánh dấu 1 cụm từ khoá bằng *...*.",
@@ -102,7 +135,7 @@ async function makeOutline(articles: Article[], o: LongOptions, totalWords: numb
     channelBlock(o),
     `Độ dài mục tiêu: ~${o.minutes} phút ≈ ${totalWords} từ lời đọc, chia thành ${nCh} chương (trường "words" của các chương cộng lại ≈ ${totalWords}).`,
     "",
-    sourceBlock(articles),
+    sourceBlock(articles, 45000, !!o.prompt),
   ].join("\n");
   let lastErr = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -131,10 +164,13 @@ async function writeChapter(
     "Bạn là người viết lời dẫn cho video YouTube dài. Viết lời đọc cho MỘT chương, chia thành các cảnh (scene) ngắn.",
     "Chỉ trả về MỘT object JSON hợp lệ, không markdown.",
     ...LANG_RULES[lang],
+    ...styleOverride(o.scriptStyle ?? o.channel.scriptStyle),
     "",
     "Quy tắc:",
     `- Mỗi scene 2–3 câu, ${sceneWords} từ, kết thúc bằng dấu . ? hoặc !. Câu ngắn gọn, dễ nghe, có nhịp.`,
-    "- Bám đúng các ý của chương; chỉ dùng dữ kiện trong nguồn; không lặp lại ý của chương khác.",
+    o.prompt
+      ? "- Bám đúng các ý của chương và Ý TƯỞNG CỦA KÊNH; tự phát triển bằng kiến thức của bạn, tài liệu tham khảo chỉ dùng khi giúp ích; không lặp lại ý của chương khác; không bịa số liệu, ngày tháng hay câu nói cụ thể gán cho người thật."
+      : "- Bám đúng các ý của chương; chỉ dùng dữ kiện trong nguồn; không lặp lại ý của chương khác.",
     idx === 0
       ? "- Đây là chương MỞ ĐẦU: câu đầu tiên phải là hook gây tò mò ngay lập tức. Không chào hỏi dài dòng."
       : `- Câu đầu chương chuyển ý tự nhiên từ chương trước ("${outline.chapters[idx - 1].title}"). Không chào hỏi lại, không tóm tắt lại video.`,
@@ -167,7 +203,7 @@ async function writeChapter(
     `Viết chương ${idx + 1}: "${ch.title}" — khoảng ${words} từ (≈ ${Math.max(2, Math.round(words / (lang === "vi" ? 45 : 32)))} scene).`,
     images.length ? `\nẢnh bài báo có sẵn:\n${images.map((im) => `- ${im.file}${im.caption ? ` — "${im.caption}"` : ""}`).join("\n")}` : "",
     "",
-    sourceBlock(articles, 30000),
+    sourceBlock(articles, 30000, !!o.prompt),
   ].join("\n");
   let lastErr = "";
   for (let attempt = 1; attempt <= 3; attempt++) {

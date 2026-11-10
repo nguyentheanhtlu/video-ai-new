@@ -18,25 +18,34 @@ export interface Shot {
   color?: string;
 }
 
-/** Ken Burns moves, cycled shot by shot so consecutive photos never move alike. */
+/**
+ * Ken Burns moves, cycled shot by shot so consecutive photos never move alike.
+ * Gentle (≤8%) and anchored high: in news photos heads sit near the top edge,
+ * so whatever the zoom trims comes mostly off the bottom, never the faces.
+ */
+const TOP = 0.15; // share of the trimmed height taken from the top
 const MOTIONS = [
-  { z: "1+0.12*on/F", x: "iw/2-(iw/zoom/2)", y: "ih/2-(ih/zoom/2)" }, // push in
-  { z: "1.12-0.12*on/F", x: "iw/2-(iw/zoom/2)", y: "ih/2-(ih/zoom/2)" }, // pull out
-  { z: "1.12", x: "(iw-iw/zoom)*on/F", y: "ih/2-(ih/zoom/2)" }, // pan right
-  { z: "1.12", x: "(iw-iw/zoom)*(1-on/F)", y: "ih/2-(ih/zoom/2)" }, // pan left
-  { z: "1+0.10*on/F", x: "iw/2-(iw/zoom/2)", y: "(ih-ih/zoom)*0.25" }, // push in, upper third (faces)
+  { z: "1+0.08*on/F", x: "iw/2-(iw/zoom/2)", y: `(ih-ih/zoom)*${TOP}` }, // push in
+  { z: "1.08-0.08*on/F", x: "iw/2-(iw/zoom/2)", y: `(ih-ih/zoom)*${TOP}` }, // pull out
+  { z: "1.07", x: "(iw-iw/zoom)*on/F", y: `(ih-ih/zoom)*${TOP}` }, // pan right
+  { z: "1.07", x: "(iw-iw/zoom)*(1-on/F)", y: `(ih-ih/zoom)*${TOP}` }, // pan left
+  { z: "1+0.06*on/F", x: "iw/2-(iw/zoom/2)", y: "0" }, // push in, held at the top edge
 ];
 
-/** Photos between these aspect ratios are cropped to fill 16:9; others sit on a blurred copy of themselves. */
-const COVER_MIN = 1.25;
-const COVER_MAX = 2.2;
+/**
+ * Photos this close to 16:9 are cropped to fill the frame (≤ ~10% trimmed, mostly
+ * from the bottom). Anything squarer or wider — 3:2 and 4:3 news photos included —
+ * is shown whole on a blurred copy of itself, so no head or ball is ever cut off.
+ */
+const COVER_MIN = 1.62;
+const COVER_MAX = 2.0;
 
 async function imageFilter(file: string): Promise<string> {
   const { width, height } = await probeSize(file).catch(() => ({ width: 16, height: 9 }));
   const ratio = height ? width / height : 16 / 9;
   // Work at 2× so the slow zoom moves in half-pixel steps (no jitter).
   if (ratio >= COVER_MIN && ratio <= COVER_MAX) {
-    return `scale=${W * 2}:${H * 2}:force_original_aspect_ratio=increase,crop=${W * 2}:${H * 2},setsar=1`;
+    return `scale=${W * 2}:${H * 2}:force_original_aspect_ratio=increase,crop=${W * 2}:${H * 2}:(iw-ow)/2:(ih-oh)*${TOP},setsar=1`;
   }
   return [
     `split[a][b]`,
@@ -47,7 +56,7 @@ async function imageFilter(file: string): Promise<string> {
 }
 
 export function shotKey(s: Shot, renderLen: number): string {
-  return fileKey("v2", s.kind, s.file ? fileStamp(s.file) : s.color ?? "", renderLen.toFixed(3), s.motion);
+  return fileKey("v3", s.kind, s.file ? fileStamp(s.file) : s.color ?? "", renderLen.toFixed(3), s.motion);
 }
 
 /** Render one shot to exactly `renderLen` seconds of 1920×1080@30 video. */
@@ -68,7 +77,7 @@ export async function renderShot(s: Shot, renderLen: number, out: string): Promi
       "-y", "-v", "error",
       ...(offset > 0 ? ["-ss", offset.toFixed(2)] : ["-stream_loop", "-1"]),
       "-i", s.file,
-      "-vf", `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},fps=${FPS},setsar=1,format=yuv420p`,
+      "-vf", `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*${TOP},fps=${FPS},setsar=1,format=yuv420p`,
       "-frames:v", String(frames), ...MID_ENCODE, tmp,
     ];
   } else {

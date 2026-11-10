@@ -140,6 +140,7 @@ async function newView(root) {
   const settings = await api("GET", "/api/settings");
   const customTemplates = (await store.templates()).filter((t) => t.generated);
   const channels = await api("GET", "/api/channels").catch(() => []);
+  const styles = await api("GET", "/api/script-styles").catch(() => [{ id: "news", name: "Tin tức", hint: "" }]);
   let mode = "long";
   let disposeLog = null;
 
@@ -152,6 +153,7 @@ async function newView(root) {
     autoRender: true,
     templateId: "",
     keepScript: true,
+    scriptStyle: styles.some((x) => x.id === localStorage.getItem("scriptStyle")) ? localStorage.getItem("scriptStyle") : "news",
   };
   // Remember the sample a channel works from, as long as it still exists.
   const lastTemplate = localStorage.getItem("templateId");
@@ -174,13 +176,24 @@ async function newView(root) {
   const blankTitle = el("input", { type: "text", placeholder: "Tên video", value: "" });
   const fileJson = el("input", { type: "file", accept: ".json,application/json" });
   const longUrls = el("textarea", { rows: 5, placeholder: "https://vnexpress.net/...\nhttps://bongda.com.vn/...\n(mỗi dòng 1 link, tối đa 8 — càng nhiều nguồn, video dài càng chắc nội dung)" });
-  const longPrompt = el("textarea", { rows: 3, placeholder: "vd: Phân tích vì sao Real Madrid sa sút mùa này — hoặc để trống để AI tự lên ý từ các bài báo" });
+  const longPrompt = el("textarea", { rows: 3, placeholder: "vd: Ronaldo treo áo số 7 — lùi lại để trao trách nhiệm cho thế hệ sau, giọng xúc động. Để trống thì AI tóm tắt theo các bài báo." });
   const long = {
     channelId: channels.some((c) => c.id === localStorage.getItem("channelId")) ? localStorage.getItem("channelId") : channels[0]?.id ?? "",
     minutes: 8,
   };
   const chOf = () => channels.find((c) => c.id === long.channelId);
   if (chOf()) long.minutes = chOf().minutes;
+  long.scriptStyle = chOf()?.scriptStyle ?? opt.scriptStyle;
+
+  /** "Kiểu kịch bản": news, affiliate, review… (get/set the value the current tab uses). */
+  const stylePicker = (get, set) => {
+    const hint = el("div", { class: "small muted" });
+    const sel = el("select", { onchange: (e) => { set(e.target.value); hint.textContent = styles.find((x) => x.id === e.target.value)?.hint ?? ""; } },
+      styles.map((x) => el("option", { value: x.id }, x.name)));
+    sel.value = get();
+    hint.textContent = styles.find((x) => x.id === get())?.hint ?? "";
+    return el("div", { class: "stack", style: { gap: "4px" } }, field("Kiểu kịch bản", sel), hint);
+  };
 
   const templatePicker = () => {
     const sel = el("select", { onchange: (e) => {
@@ -189,7 +202,7 @@ async function newView(root) {
       opt.length = opt.templateId ? "sample" : "standard";
       drawForm();
     } },
-      el("option", { value: "" }, "Khung tin tức mặc định"),
+      el("option", { value: "" }, "Khung kênh mặc định"),
       customTemplates.map((t) => el("option", { value: t.id }, t.name)));
     sel.value = opt.templateId;
     return field("Template", sel, customTemplates.length ? "theo video mẫu" : null);
@@ -206,6 +219,7 @@ async function newView(root) {
       long.channelId = e.target.value;
       localStorage.setItem("channelId", long.channelId);
       if (chOf()) long.minutes = chOf().minutes;
+      if (chOf()?.scriptStyle) long.scriptStyle = chOf().scriptStyle;
       drawForm();
     } },
       channels.map((c) => el("option", { value: c.id }, `${c.language === "en" ? "🇬🇧" : "🇻🇳"} ${c.name}`)),
@@ -216,6 +230,7 @@ async function newView(root) {
     return el("div", { class: "card stack" },
       el("h3", {}, "Tuỳ chọn video dài"),
       field("Kênh", sel, ch ? `${ch.language === "en" ? "tiếng Anh" : "tiếng Việt"}` : "theo Cài đặt"),
+      stylePicker(() => long.scriptStyle, (v) => (long.scriptStyle = v)),
       channels.length ? null : el("div", { class: "callout small" }, "Chưa có hồ sơ kênh. ", el("a", { href: "#/channels" }, "Tạo kênh"), " để mỗi kênh có ngôn ngữ, giọng đọc, chủ đề riêng."),
       field("Độ dài", el("div", { class: "row" },
         el("input", { type: "range", min: 3, max: 15, step: 1, value: long.minutes, oninput: (e) => { long.minutes = Number(e.target.value); minLabel.textContent = `${long.minutes} phút`; } }), minLabel)),
@@ -229,6 +244,9 @@ async function newView(root) {
   const optionsCard = () => mode === "long" ? longOptions() : el("div", { class: "card stack" },
     el("h3", {}, "Tuỳ chọn"),
     mode === "url" || mode === "text" ? templatePicker() : null,
+    (mode === "url" || mode === "text") && !(mode === "text" && opt.keepScript)
+      ? stylePicker(() => opt.scriptStyle, (v) => { opt.scriptStyle = v; localStorage.setItem("scriptStyle", v); })
+      : null,
     mode === "text" ? field("Dùng văn bản này thế nào", seg([[true, "Đọc đúng kịch bản của tôi"], [false, "AI viết lại từ bài"]], () => opt.keepScript, (v) => { opt.keepScript = v; drawForm(); }),
       opt.keepScript ? "giữ nguyên từng chữ" : null) : null,
     (mode === "url" || mode === "text") && !(mode === "text" && opt.keepScript) ? el("div", { class: "row between" }, el("span", { class: "muted small" }, "Độ dài"),
@@ -239,7 +257,7 @@ async function newView(root) {
       el("div", { class: "grid-2" },
         field("Tên kênh", el("input", { type: "text", value: opt.channel, oninput: (e) => (opt.channel = e.target.value) })),
         field("URL kênh (outro)", el("input", { type: "text", value: opt.channelUrl, oninput: (e) => (opt.channelUrl = e.target.value) }))),
-      mode === "text" && opt.keepScript ? null : field("Yêu cầu thêm cho AI", el("textarea", { rows: 2, value: opt.extraInstructions, placeholder: "vd: giọng văn hài hước, nhấn mạnh giá bán, thêm 1 scene so sánh…", oninput: (e) => (opt.extraInstructions = e.target.value) }), "tuỳ chọn"),
+      mode === "text" && opt.keepScript ? null : field("Ý tưởng của kênh cho AI", el("textarea", { rows: 3, value: opt.extraInstructions, placeholder: "vd: Tập trung vào bức tâm thư và quyết định treo áo số 7, giọng xúc động, kết bằng câu hỏi cho khán giả…", oninput: (e) => (opt.extraInstructions = e.target.value) }), "AI viết theo ý tưởng này, bài báo chỉ để tham khảo"),
       el("label", { class: "check" }, el("input", { type: "checkbox", checked: opt.autoRender, onchange: (e) => (opt.autoRender = e.target.checked) }), mode === "text" && opt.keepScript ? "Render video ngay sau khi chia cảnh xong" : "Render video ngay sau khi AI viết xong kịch bản"),
     ] : null,
   );
@@ -254,7 +272,7 @@ async function newView(root) {
     const main = {
       long: el("div", { class: "card stack" },
         field("Link bài báo", longUrls, "mỗi dòng 1 link"),
-        field("Chủ đề / góc nhìn", longPrompt, "tuỳ chọn khi đã có link"),
+        field("Ý tưởng của kênh", longPrompt, "có ý tưởng thì AI viết theo ý tưởng, link chỉ để tham khảo"),
         el("p", { class: "small muted", style: { margin: 0 } }, "AI đọc các bài, lập dàn ý theo chương, viết lời dẫn, rồi lấy ảnh thật cho cảnh về người/sự kiện và vẽ ảnh AI (đã kiểm tra khớp lời đọc) cho các cảnh còn lại. Chỉ có chủ đề, không có link → AI viết từ kiến thức chung (nên kiểm tra lại dữ kiện).")),
       url: el("div", { class: "card stack" }, field("Link bài báo", urlInput), el("p", { class: "small muted", style: { margin: 0 } }, "Server tải trang và lấy nội dung chính. Trang cần đăng nhập / chặn bot → dùng tab Dán văn bản.")),
       text: el("div", { class: "card stack" }, field("Nội dung bài", textArea), el("div", { class: "row small muted" }, "Hoặc chọn file .txt:", fileTxt)),
@@ -279,7 +297,7 @@ async function newView(root) {
       const bad = urls.filter((u) => !/^https?:\/\//.test(u));
       if (bad.length) return toast(`Link không hợp lệ: ${bad[0]}`, "warn");
       if (!urls.length && longPrompt.value.trim().length < 10) return toast("Nhập ít nhất 1 link, hoặc mô tả chủ đề video", "warn");
-      body = { mode, urls, prompt: longPrompt.value.trim(), channelId: long.channelId || undefined, minutes: long.minutes, extraInstructions: opt.extraInstructions, autoRender: opt.autoRender };
+      body = { mode, urls, prompt: longPrompt.value.trim(), channelId: long.channelId || undefined, minutes: long.minutes, extraInstructions: opt.extraInstructions, autoRender: opt.autoRender, scriptStyle: long.scriptStyle };
     } else if (mode === "url") {
       if (!/^https?:\/\//.test(urlInput.value.trim())) return toast("Nhập link bắt đầu bằng http:// hoặc https://", "warn");
       body = { mode, url: urlInput.value.trim(), ...opt };
@@ -326,7 +344,7 @@ async function newView(root) {
 
 // ── Channels ───────────────────────────────────────────────────────────────
 async function channelsView(root) {
-  const [settings, edgeVoices] = await Promise.all([api("GET", "/api/settings"), store.voices().catch(() => [])]);
+  const [settings, edgeVoices, scriptStyles] = await Promise.all([api("GET", "/api/settings"), store.voices().catch(() => []), api("GET", "/api/script-styles").catch(() => [])]);
   let list = await api("GET", "/api/channels");
   let yt = await api("GET", "/api/youtube/status").catch(() => null);
   const field = (label, node, hint) => el("label", { class: "field" }, el("span", {}, label, hint ? el("em", {}, hint) : null), node);
@@ -337,7 +355,7 @@ async function channelsView(root) {
   const blank = () => ({
     name: "", language: "vi", niche: "", url: "", brandColor: "#0e9f6e", minutes: 8, music: true, subtitles: true,
     visuals: "ai", aiImageSize: "2K", aiHookVideo: false,
-    autoUpload: false, publishTimes: ["19:00"], privacy: "public", categoryId: "22", declareSynthetic: true,
+    autoUpload: false, publishTimes: ["19:00"], privacy: "public", categoryId: "22", declareSynthetic: true, scriptStyle: "news",
     voice: settings.GENMAX_API_KEY_SET
       ? { engine: "genmax", rate: "+0%", genmax: { provider: settings.GENMAX_PROVIDER, voiceId: settings.GENMAX_VOICE, model: settings.GENMAX_MODEL, language: settings.GENMAX_LANGUAGE } }
       : { engine: "edge", edgeVoice: "vi-VN-HoaiMyNeural", rate: "+5%" },
@@ -345,13 +363,23 @@ async function channelsView(root) {
 
   /** Connection status + auto-upload summary under each channel. */
   function ytLine(c) {
-    if (!yt?.configured) return null;
-    const con = yt.connections?.[c.id];
-    if (!con) return el("div", { class: "small", style: { marginTop: "4px" } }, el("span", { class: "chip" }, "YouTube: chưa kết nối"));
-    if (con.broken) return el("div", { class: "small", style: { marginTop: "4px" } }, el("span", { class: "chip bad" }, `YouTube: ${con.broken} — kết nối lại`));
+    if (!yt?.configured && !yt?.facebook?.configured) return null;
+    const chips = [];
+    if (yt.configured) {
+      const con = yt.connections?.[c.id];
+      chips.push(!con ? el("span", { class: "chip" }, "YouTube: chưa kết nối")
+        : con.broken ? el("span", { class: "chip bad" }, `YouTube: ${con.broken} — kết nối lại`)
+        : el("span", { class: "chip ok" }, `▶ ${con.youtube.title}`));
+    }
+    if (yt.facebook?.configured) {
+      const fb = yt.facebook.connections?.[c.id];
+      chips.push(!fb ? el("span", { class: "chip" }, "Facebook: chưa kết nối")
+        : fb.broken ? el("span", { class: "chip bad" }, `Facebook: ${fb.broken} — kết nối lại`)
+        : el("span", { class: "chip info" }, `f ${fb.page.name}`));
+    }
     const slot = yt.nextSlots?.[c.id];
     return el("div", { class: "small row", style: { marginTop: "4px", gap: "6px", flexWrap: "wrap" } },
-      el("span", { class: "chip ok" }, `▶ ${con.youtube.title}`),
+      chips,
       el("span", { class: c.autoUpload ? "chip accent" : "chip" }, c.autoUpload ? "Tự đăng sau khi render" : "Đăng thủ công"),
       c.publishTimes?.length
         ? el("span", { class: "faint" }, `Lịch: ${c.publishTimes.join(", ")}${slot ? ` · giờ trống kế tiếp ${fmtVN(slot)}` : ""}`)
@@ -359,19 +387,33 @@ async function channelsView(root) {
   }
 
   function ytButton(c) {
-    if (!yt?.configured) return null;
-    const con = yt.connections?.[c.id];
-    if (!con || con.broken) return el("a", { class: "btn sm", href: `/api/youtube/connect?channel=${encodeURIComponent(c.id)}` }, "🔗 Kết nối YouTube");
-    return el("button", { class: "btn ghost sm", onclick: async () => {
-      if (!(await confirmBox(`Ngắt kết nối "${c.name}" khỏi kênh YouTube "${con.youtube.title}"? Token sẽ bị thu hồi.`, "Ngắt kết nối", true))) return;
-      await guard(() => api("POST", `/api/youtube/disconnect/${c.id}`), "Đã ngắt kết nối");
-      await refreshYt();
-    } }, "Ngắt YouTube");
+    const out = [];
+    if (yt?.configured) {
+      const con = yt.connections?.[c.id];
+      out.push(!con || con.broken
+        ? el("a", { class: "btn sm", href: `/api/youtube/connect?channel=${encodeURIComponent(c.id)}` }, "🔗 Kết nối YouTube")
+        : el("button", { class: "btn ghost sm", onclick: async () => {
+          if (!(await confirmBox(`Ngắt kết nối "${c.name}" khỏi kênh YouTube "${con.youtube.title}"? Token sẽ bị thu hồi.`, "Ngắt kết nối", true))) return;
+          await guard(() => api("POST", `/api/youtube/disconnect/${c.id}`), "Đã ngắt kết nối");
+          await refreshYt();
+        } }, "Ngắt YouTube"));
+    }
+    if (yt?.facebook?.configured) {
+      const fb = yt.facebook.connections?.[c.id];
+      out.push(!fb || fb.broken
+        ? el("a", { class: "btn sm", href: `/api/facebook/connect?channel=${encodeURIComponent(c.id)}` }, "🔗 Kết nối Facebook")
+        : el("button", { class: "btn ghost sm", onclick: async () => {
+          if (!(await confirmBox(`Ngắt "${c.name}" khỏi Page "${fb.page.name}"?`, "Ngắt kết nối", true))) return;
+          await guard(() => api("POST", `/api/facebook/disconnect/${c.id}`), "Đã ngắt Facebook");
+          await refreshYt();
+        } }, "Ngắt Facebook"));
+    }
+    return out;
   }
 
   function drawQueue() {
     if (!yt) return clear(queueBox);
-    if (!yt.configured) {
+    if (!yt.configured && !yt.facebook?.configured) {
       return clear(queueBox, el("div", { class: "callout warn small" },
         "Chưa có credentials/client_secret.json — tạo OAuth Client ID (Desktop app) trong Google Cloud rồi đặt file vào thư mục credentials/ để đăng YouTube tự động."));
     }
@@ -384,6 +426,7 @@ async function channelsView(root) {
       return el("div", { class: "card row between", style: { padding: "10px 14px" } },
         el("div", { class: "stack", style: { gap: "2px", minWidth: 0 } },
           el("div", { class: "row", style: { gap: "8px" } },
+            el("span", { class: u.platform === "facebook" ? "chip info" : "chip bad" }, u.platform === "facebook" ? "Facebook" : "YouTube"),
             el("span", { class: cls }, u.status === "uploading" && u.progress != null ? `${label} ${u.progress}%` : label),
             el("a", { href: `#/p/${encodeURIComponent(u.slug)}`, style: { fontWeight: 600 } }, u.title)),
           el("div", { class: "small faint" },
@@ -391,7 +434,7 @@ async function channelsView(root) {
           u.error ? el("div", { class: "small", style: { color: "var(--bad)" } }, u.error) : null,
           (u.warnings ?? []).map((w) => el("div", { class: "small", style: { color: "var(--warn)" } }, w))),
         el("div", { class: "row" },
-          u.videoId ? el("a", { class: "btn sm", href: `https://studio.youtube.com/video/${u.videoId}/edit`, target: "_blank" }, "Mở Studio") : null,
+          u.videoId ? el("a", { class: "btn sm", href: u.url ?? `https://studio.youtube.com/video/${u.videoId}/edit`, target: "_blank" }, u.platform === "facebook" ? "Mở Facebook" : "Mở Studio") : null,
           u.status === "failed" ? el("button", { class: "btn sm", onclick: () => guard(() => api("POST", `/api/youtube/uploads/${u.id}/retry`), "Đã xếp lại hàng đợi") }, "Thử lại") : null,
           u.status === "pending" || u.status === "failed"
             ? el("button", { class: "btn ghost sm danger", onclick: () => guard(() => api("DELETE", `/api/youtube/uploads/${u.id}`), "Đã bỏ khỏi hàng đợi") }, "Bỏ")
@@ -579,6 +622,11 @@ async function channelsView(root) {
         field("Link kênh", text("url", { placeholder: "https://youtube.com/@..." })),
         field("Màu nhận diện", el("div", { class: "row" }, color, el("span", { class: "small faint" }, "thẻ chương, thumbnail")))),
       field("Chủ đề & phong cách", niche, "AI dùng cho mọi kịch bản của kênh"),
+      (() => {
+        const sel = el("select", { onchange: (e) => (ch.scriptStyle = e.target.value) }, scriptStyles.map((x) => el("option", { value: x.id }, `${x.name} — ${x.hint}`)));
+        sel.value = ch.scriptStyle ?? "news";
+        return field("Kiểu kịch bản mặc định", sel, "đổi được khi tạo từng video");
+      })(),
       el("h3", {}, "🎙 Giọng đọc"),
       voiceBox,
       el("div", { class: "grid-2" },

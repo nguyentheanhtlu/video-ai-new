@@ -249,7 +249,7 @@ export async function runSlideshowPipeline(scriptPath: string): Promise<void> {
   const thumbSrc = shots.find((s) => s.kind === "image")?.file;
   await writeFile(join(outputDir, "thumbnail.ass"), thumbnailAss(script.metadata.title, brandColor));
   const thumbPath = join(outputDir, "thumbnail.jpg");
-  const thumbFilter = `scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,eq=brightness=-0.06:saturation=1.2,ass=thumbnail.ass`;
+  const thumbFilter = `scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720:(iw-ow)/2:(ih-oh)*0.15,eq=brightness=-0.06:saturation=1.2,ass=thumbnail.ass`;
   if (thumbSrc) await run("ffmpeg", ["-y", "-v", "error", "-i", thumbSrc, "-vf", thumbFilter, "-frames:v", "1", "-q:v", "2", thumbPath], outputDir);
   else await run("ffmpeg", ["-y", "-v", "error", "-ss", "2", "-i", videoPath, "-vf", thumbFilter, "-frames:v", "1", "-q:v", "2", thumbPath], outputDir);
   await copyFile(thumbPath, join(outputDir, "cover.jpg"));

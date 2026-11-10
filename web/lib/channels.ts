@@ -5,6 +5,7 @@ import { z } from "zod";
 import { toSlug } from "../../src/utils/slug.js";
 import { VoiceOverrideSchema } from "../../src/tts/voice.js";
 import { HttpError, ROOT } from "./paths.js";
+import { STYLE_IDS } from "./script-styles.js";
 
 /**
  * A YouTube channel the tool produces for: its language, voice, topic and look.
@@ -36,6 +37,8 @@ export const ChannelSchema = z.object({
   privacy: z.enum(["public", "unlisted", "private"]).default("public"),
   /** YouTube category: 22 People & Blogs, 25 News & Politics, 17 Sports, 24 Entertainment, 27 Education, 28 Science & Tech. */
   categoryId: z.string().regex(/^\d+$/).default("22"),
+  /** Default script style for this channel's videos (news, affiliate, review…). */
+  scriptStyle: z.enum(STYLE_IDS).default("news"),
   /** Tick YouTube's "altered or synthetic content" box on every upload (AI voice / AI images). */
   declareSynthetic: z.boolean().default(true),
   createdAt: z.string().optional(),
