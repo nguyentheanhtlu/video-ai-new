@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: string[] = [];
+const userTexts: string[] = [];
 vi.mock("./llm.js", () => ({
   generateJson: vi.fn(async (system: string, turns: { text: string }[]) => {
     calls.push(system);
+    userTexts.push(turns[0].text);
     if (system.includes("DÀN Ý")) {
       return {
         value: {
@@ -57,6 +59,7 @@ const channel = {
   privacy: "public" as const,
   categoryId: "22",
   declareSynthetic: true,
+  scriptStyle: "news" as const,
 };
 
 describe("generateLongScript", () => {
@@ -89,6 +92,35 @@ describe("generateLongScript", () => {
     expect(script.voice.override).toEqual(channel.voice);
     expect(script.metadata).toMatchObject({ channel: "Bóng Đá 24h", channelId: "bd", sources: ["https://vnexpress.net/a"] });
     expect(script.style.brandColor).toBe("#112233");
+  });
+
+  it("puts the user's brief first and makes it outrank the source's structure", async () => {
+    calls.length = 0;
+    userTexts.length = 0;
+    const brief = "Tập trung vào bức tâm thư và quyết định treo áo số 7";
+    await generateLongScript(
+      [{ title: "24 năm theo chân Ronaldo", content: "Hành trình dài…", image: null, domain: "vnexpress.net", url: "https://vnexpress.net/a", images: [] }],
+      [],
+      { channel, minutes: 5, prompt: brief },
+      () => {},
+    );
+    expect(calls[0]).toContain("THEO Ý TƯỞNG CỦA KÊNH");
+    expect(calls[0]).not.toContain("Chỉ dùng dữ kiện có trong nguồn");
+    expect(userTexts[0].startsWith("## Ý TƯỞNG CỦA KÊNH")).toBe(true);
+    expect(userTexts[0]).toContain("TÀI LIỆU THAM KHẢO (không bắt buộc");
+    expect(userTexts[0]).toContain(brief);
+    // Every chapter writer sees the brief too.
+    expect(userTexts.slice(1).every((t) => t.includes(brief))).toBe(true);
+    expect(calls.slice(1).every((c) => c.includes("Ý TƯỞNG CỦA KÊNH") && !c.includes("chỉ dùng dữ kiện trong nguồn"))).toBe(true);
+  });
+
+  it("uses the channel script style, and the per-video style wins", async () => {
+    calls.length = 0;
+    await generateLongScript([], [], { channel: { ...channel, scriptStyle: "affiliate" }, minutes: 5, prompt: "nồi chiên không dầu" }, () => {});
+    expect(calls.every((c) => c.includes("KIỂU KỊCH BẢN: AFFILIATE"))).toBe(true);
+    calls.length = 0;
+    await generateLongScript([], [], { channel: { ...channel, scriptStyle: "affiliate" }, minutes: 5, prompt: "x", scriptStyle: "news" }, () => {});
+    expect(calls.some((c) => c.includes("KIỂU KỊCH BẢN"))).toBe(false);
   });
 
   it("asks for English narration on English channels", async () => {

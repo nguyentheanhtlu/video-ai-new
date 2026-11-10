@@ -3,8 +3,11 @@ import { EventEmitter } from "node:events";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { getDurationSec } from "../../src/assets/audio-tools.js";
 import { getChannel, type Channel } from "./channels.js";
+import { fbUpload, getFbConnection } from "./facebook.js";
 import { HttpError, projectDir, ROOT } from "./paths.js";
+import { UploadError } from "./upload-error.js";
 
 /**
  * Block C: publish rendered videos to YouTube through the official Data API v3.
@@ -280,8 +283,13 @@ async function readManifest(slug: string): Promise<Manifest> {
 export type UploadStatus = "pending" | "uploading" | "done" | "failed";
 export type Privacy = "public" | "unlisted" | "private";
 
+export type Platform = "youtube" | "facebook";
+export const PLATFORM_NAME: Record<Platform, string> = { youtube: "YouTube", facebook: "Facebook" };
+
 export interface UploadItem {
   id: string;
+  /** Missing on entries queued before Facebook existed: those are YouTube. */
+  platform?: Platform;
   slug: string;
   channelId: string;
   title: string;
@@ -294,16 +302,12 @@ export interface UploadItem {
   nextTryAt?: string;
   error?: string;
   videoId?: string;
+  /** Where to see it (Studio link for YouTube, the post for Facebook). */
+  url?: string;
   warnings?: string[];
   createdAt: string;
   uploadedAt?: string;
   auto?: boolean;
-}
-
-class UploadError extends Error {
-  constructor(message: string, public retry: boolean, public waitMs?: number) {
-    super(message);
-  }
 }
 
 function readQueue(): UploadItem[] {
@@ -329,15 +333,25 @@ async function persist() {
   ytBus.emit("change");
 }
 
-export const listUploads = () => [...items()].reverse();
+export const platformOf = (i: Pick<UploadItem, "platform">): Platform => i.platform ?? "youtube";
+export const listUploads = () => [...items()].reverse().map((i) => ({ ...i, platform: platformOf(i) }));
 export const uploadsFor = (slug: string) => items().filter((i) => i.slug === slug);
 
-/** Next free daily publish slot (Vietnam time, UTC+7) for a channel, at least 30 min out. */
-export function nextSlot(channel: Channel, taken = items()): string | undefined {
+const isConnected = (platform: Platform, channelId: string) =>
+  platform === "facebook" ? !!getFbConnection(channelId) : !!getConnection(channelId);
+
+/**
+ * Next free daily publish slot (Vietnam time, UTC+7) for a channel on one
+ * platform, at least 30 min out. YouTube and Facebook keep separate slot lists,
+ * so the same video goes live on both at the same time.
+ */
+export function nextSlot(channel: Channel, taken = items(), platform: Platform = "youtube"): string | undefined {
   const times = (channel.publishTimes ?? []).filter((t) => /^\d{2}:\d{2}$/.test(t)).sort();
   if (!times.length) return undefined;
   const busy = new Set(
-    taken.filter((i) => i.channelId === channel.id && i.publishAt && i.status !== "failed").map((i) => new Date(i.publishAt!).getTime()),
+    taken
+      .filter((i) => i.channelId === channel.id && platformOf(i) === platform && i.publishAt && i.status !== "failed")
+      .map((i) => new Date(i.publishAt!).getTime()),
   );
   const earliest = Date.now() + 30 * 60_000;
   const vnNow = new Date(Date.now() + 7 * 3600_000);
@@ -354,20 +368,22 @@ export function nextSlot(channel: Channel, taken = items()): string | undefined 
 export async function enqueueUpload(opts: {
   slug: string;
   channelId: string;
+  platform?: Platform;
   privacy?: Privacy;
   /** ISO time, "auto" = next free slot of the channel, undefined = right away. */
   publishAt?: string;
   auto?: boolean;
 }): Promise<UploadItem> {
+  const platform = opts.platform ?? "youtube";
   const channel = getChannel(opts.channelId);
   if (!channel) throw new HttpError(404, "Không có kênh này");
-  if (!getConnection(channel.id)) throw new HttpError(400, `Kênh "${channel.name}" chưa kết nối YouTube.`);
-  const live = items().find((i) => i.slug === opts.slug && i.channelId === channel.id && (i.status === "pending" || i.status === "uploading" || i.status === "done"));
-  if (live) throw new HttpError(409, live.status === "done" ? "Video này đã đăng lên kênh này rồi." : "Video này đang trong hàng đợi đăng.");
+  if (!isConnected(platform, channel.id)) throw new HttpError(400, `Kênh "${channel.name}" chưa kết nối ${PLATFORM_NAME[platform]}.`);
+  const live = items().find((i) => i.slug === opts.slug && i.channelId === channel.id && platformOf(i) === platform && (i.status === "pending" || i.status === "uploading" || i.status === "done"));
+  if (live) throw new HttpError(409, live.status === "done" ? `Video này đã đăng lên ${PLATFORM_NAME[platform]} của kênh này rồi.` : `Video này đang chờ đăng ${PLATFORM_NAME[platform]}.`);
   const m = await readManifest(opts.slug).catch((e) => {
     throw new HttpError(400, (e as Error).message);
   });
-  let publishAt = opts.publishAt === "auto" ? nextSlot(channel) : opts.publishAt;
+  let publishAt = opts.publishAt === "auto" ? nextSlot(channel, items(), platform) : opts.publishAt;
   if (publishAt) {
     const t = new Date(publishAt).getTime();
     if (!Number.isFinite(t)) throw new HttpError(400, "Giờ đăng không hợp lệ");
@@ -376,6 +392,7 @@ export async function enqueueUpload(opts: {
   }
   const item: UploadItem = {
     id: randomUUID(),
+    platform,
     slug: opts.slug,
     channelId: channel.id,
     title: fitTitle(m.title),
@@ -533,6 +550,7 @@ async function upload(item: UploadItem, log: (msg: string) => void): Promise<voi
   }
   if (!result.id) throw new UploadError("YouTube không trả ID video", false);
   item.videoId = result.id;
+  item.url = `https://studio.youtube.com/video/${result.id}/edit`;
   item.progress = 100;
   log(`✓ Đã tải lên: https://youtu.be/${result.id}`);
 
@@ -556,6 +574,33 @@ async function upload(item: UploadItem, log: (msg: string) => void): Promise<voi
   }
 }
 
+async function uploadFacebook(item: UploadItem) {
+  const m = await readManifest(item.slug);
+  const video = join(projectDir(item.slug), "video.mp4");
+  const durationSec = await getDurationSec(video).catch(() => 0);
+  const r = await fbUpload(
+    {
+      channelId: item.channelId,
+      video,
+      title: fitTitle(m.title),
+      description: clean(m.description),
+      vertical: m.vertical,
+      durationSec,
+      publishAt: item.publishAt,
+      publish: item.privacy === "public",
+    },
+    (pct) => {
+      item.progress = pct;
+      ytBus.emit("change");
+    },
+    log,
+  );
+  item.videoId = r.videoId;
+  item.url = r.url;
+  item.progress = 100;
+  log(`✓ Đã đăng Facebook: ${r.url}`);
+}
+
 // ── Worker: one upload at a time ───────────────────────────────────────────
 let busy = false;
 let timer: NodeJS.Timeout | null = null;
@@ -566,7 +611,7 @@ function log(msg: string) {
   const line = `[${new Date().toLocaleTimeString("vi-VN")}] ${msg}`;
   logs.push(line);
   if (logs.length > 500) logs.splice(0, logs.length - 500);
-  console.log(`  [YouTube] ${msg}`);
+  console.log(`  [Đăng video] ${msg}`);
   ytBus.emit("log", line);
 }
 
@@ -589,7 +634,8 @@ async function work() {
       item.error = undefined;
       await persist();
       try {
-        await upload(item, log);
+        if (platformOf(item) === "facebook") await uploadFacebook(item);
+        else await upload(item, log);
         item.status = "done";
         item.uploadedAt = new Date().toISOString();
         item.nextTryAt = undefined;
@@ -603,14 +649,13 @@ async function work() {
           if (quotaWait) item.attempts--; // waiting for quota isn't a failed try
           const wait = err.waitMs ?? (quotaWait ? 30 * 60_000 : Math.min(3600_000, 60_000 * 2 ** item.attempts));
           item.nextTryAt = new Date(Date.now() + wait).toISOString();
-          log(`✗ ${item.title}: ${err.message} — thử lại lúc ${new Date(item.nextTryAt).toLocaleTimeString("vi-VN")}`);
+          log(`✗ [${PLATFORM_NAME[platformOf(item)]}] ${item.title}: ${err.message} — thử lại lúc ${new Date(item.nextTryAt).toLocaleTimeString("vi-VN")}`);
         } else {
           item.status = "failed";
-          log(`✗ ${item.title}: ${err.message}`);
+          log(`✗ [${PLATFORM_NAME[platformOf(item)]}] ${item.title}: ${err.message}`);
         }
       }
       await persist();
-      if (item.status === "pending" && /quota/i.test(item.error ?? "")) break; // nothing else can go today
     }
   } finally {
     busy = false;

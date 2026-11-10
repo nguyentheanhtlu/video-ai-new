@@ -70,6 +70,8 @@ import {
   uploadsFor,
   ytBus,
 } from "./lib/youtube.js";
+import { publicStyles } from "./lib/script-styles.js";
+import { fbAuthUrl, fbBus, fbConfigured, fbDisconnect, fbFinishAuth, fbPick, publicFbConnection } from "./lib/facebook.js";
 
 const PORT = Number(process.env.WEB_PORT ?? 3210);
 const TTS_ENDPOINT = new URL(process.env.OMNIVOICE_ENDPOINT ?? "http://127.0.0.1:8123");
@@ -385,6 +387,7 @@ app.get("/api/brand/logo", (_req, res) => {
 
 // ── Channels (one profile per YouTube channel: language, voice, topic, look) ─
 app.get("/api/channels", h(() => listChannels()));
+app.get("/api/script-styles", h(() => publicStyles()));
 app.post("/api/channels", h((req) => saveChannel(req.body)));
 app.delete("/api/channels/:id", h(async (req) => {
   await deleteChannel(param(req, "id"));
@@ -406,6 +409,11 @@ app.get("/api/youtube/status", h(() => ({
   nextSlots: Object.fromEntries(listChannels().map((c) => [c.id, nextSlot(c) ?? null])),
   uploads: listUploads(),
   log: uploadLog(),
+  facebook: {
+    configured: fbConfigured(),
+    connections: Object.fromEntries(listChannels().map((c) => [c.id, publicFbConnection(c.id)])),
+    nextSlots: Object.fromEntries(listChannels().map((c) => [c.id, nextSlot(c, undefined, "facebook") ?? null])),
+  },
 })));
 
 app.get("/api/youtube/connect", h((req, res) => {
@@ -436,9 +444,47 @@ app.post("/api/youtube/uploads", h(async (req) => {
   return enqueueUpload({
     slug: String(b.slug ?? ""),
     channelId: String(b.channelId ?? ""),
+    platform: b.platform === "facebook" ? "facebook" : "youtube",
     privacy,
     publishAt: b.publishAt ? String(b.publishAt) : undefined,
   });
+}));
+
+// ── Facebook Pages (Graph API; one Page per tool channel) ────────────────────
+const fbRedirect = () => `http://localhost:${PORT}/api/facebook/callback`;
+
+app.get("/api/facebook/connect", h((_req, res) => {
+  res.redirect(fbAuthUrl(String(_req.query.channel ?? ""), fbRedirect()));
+}));
+
+app.get("/api/facebook/callback", async (req, res) => {
+  const { code, state, error_description, error } = req.query as Record<string, string | undefined>;
+  try {
+    if (error) throw new Error(error_description ?? error);
+    if (!code || !state) throw new Error("Thiếu mã đăng nhập từ Facebook.");
+    const r = await fbFinishAuth(code, state);
+    if (r.connected) return res.redirect(`http://localhost:${PORT}/#/channels`);
+    const links = r.pages!.map((p) =>
+      `<li style="margin:8px 0"><a href="/api/facebook/pick?pick=${r.pick}&page=${encodeURIComponent(p.id)}">${escapeHtml(p.name)}</a></li>`).join("");
+    res.send(ytPage("Chọn Page cho kênh này", `Tài khoản quản lý ${r.pages!.length} Page. Bấm Page sẽ đăng video của kênh <b>${escapeHtml(getChannel(r.channelId)?.name ?? r.channelId)}</b>:</p><ul>${links}</ul><p>`));
+  } catch (e) {
+    res.status(400).send(ytPage("Kết nối Facebook thất bại", escapeHtml((e as Error).message)));
+  }
+});
+
+app.get("/api/facebook/pick", async (req, res) => {
+  try {
+    const r = await fbPick(String(req.query.pick ?? ""), String(req.query.page ?? ""));
+    console.log(`  [Facebook] Đã kết nối kênh ${r.channelId} → Page ${r.page.name}`);
+    res.redirect(`http://localhost:${PORT}/#/channels`);
+  } catch (e) {
+    res.status(400).send(ytPage("Kết nối Facebook thất bại", escapeHtml((e as Error).message)));
+  }
+});
+
+app.post("/api/facebook/disconnect/:channel", h(async (req) => {
+  await fbDisconnect(param(req, "channel"));
+  return { ok: true };
 }));
 app.post("/api/youtube/uploads/:id/retry", h((req) => retryUpload(param(req, "id"))));
 app.delete("/api/youtube/uploads/:id", h(async (req) => {
@@ -446,18 +492,22 @@ app.delete("/api/youtube/uploads/:id", h(async (req) => {
   return { ok: true };
 }));
 
-/** After a render: queue the upload if the video's channel has auto-upload on. */
+/** After a render: queue the upload on every platform the video's channel is connected to, if auto-upload is on. */
 async function autoUpload(slug: string, log: (l: string) => void) {
-  try {
-    const script = await readScript(slug);
-    const ch = script.metadata.channelId ? getChannel(script.metadata.channelId) : undefined;
-    if (!ch?.autoUpload) return;
-    if (!publicConnection(ch.id)) return log(`⚠ Kênh "${ch.name}" bật tự đăng nhưng chưa kết nối YouTube — bỏ qua.`);
-    if (uploadsFor(slug).some((u) => u.channelId === ch.id && u.status !== "failed")) return;
-    const item = await enqueueUpload({ slug, channelId: ch.id, publishAt: "auto", auto: true });
-    log(`✓ Đã xếp hàng đăng YouTube → ${ch.name}${item.publishAt ? `, công khai lúc ${new Date(item.publishAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : ""}`);
-  } catch (e) {
-    log(`⚠ Không xếp hàng đăng YouTube được: ${(e as Error).message}`);
+  const script = await readScript(slug).catch(() => null);
+  const ch = script?.metadata.channelId ? getChannel(script.metadata.channelId) : undefined;
+  if (!ch?.autoUpload) return;
+  const targets = ([["youtube", !!publicConnection(ch.id)], ["facebook", !!publicFbConnection(ch.id)]] as const).filter(([, ok]) => ok);
+  if (!targets.length) return log(`⚠ Kênh "${ch.name}" bật tự đăng nhưng chưa kết nối YouTube/Facebook — bỏ qua.`);
+  for (const [platform] of targets) {
+    const name = platform === "facebook" ? "Facebook" : "YouTube";
+    try {
+      if (uploadsFor(slug).some((u) => u.channelId === ch.id && (u.platform ?? "youtube") === platform && u.status !== "failed")) continue;
+      const item = await enqueueUpload({ slug, channelId: ch.id, platform, publishAt: "auto", auto: true });
+      log(`✓ Đã xếp hàng đăng ${name} → ${ch.name}${item.publishAt ? `, công khai lúc ${new Date(item.publishAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : ""}`);
+    } catch (e) {
+      log(`⚠ Không xếp hàng đăng ${name} được: ${(e as Error).message}`);
+    }
   }
 }
 
@@ -483,6 +533,7 @@ function settingsChannel(): Channel {
     privacy: "public",
     categoryId: "22",
     declareSynthetic: true,
+    scriptStyle: "news",
   };
 }
 
@@ -534,6 +585,7 @@ app.post("/api/projects", h(async (req) => {
     channelUrl: String(body.channelUrl || getSetting("CHANNEL_URL")),
     extraInstructions: body.extraInstructions ? String(body.extraInstructions) : undefined,
     templateId: template?.id,
+    scriptStyle: body.scriptStyle ? String(body.scriptStyle) : undefined,
   };
   const label = mode === "url" ? String(body.url) : String(body.text ?? "").split("\n")[0].slice(0, 60);
   const job = enqueue("generate", `Viết kịch bản: ${label}`, async (ctx) => {
@@ -643,6 +695,7 @@ function enqueueLong(body: Record<string, unknown>) {
         minutes,
         prompt: prompt || undefined,
         extraInstructions: body.extraInstructions ? String(body.extraInstructions) : undefined,
+        scriptStyle: body.scriptStyle ? String(body.scriptStyle) : undefined,
       }, ctx.log);
 
       type LongScene = (typeof script.scenes)[number];
@@ -1089,12 +1142,14 @@ app.get("/api/events", (req, res) => {
   bus.on("update", onUpdate);
   bus.on("log", onLog);
   ytBus.on("change", onYt);
+  fbBus.on("change", onYt);
   const ping = setInterval(() => res.write(": ping\n\n"), 20000);
   req.on("close", () => {
     clearInterval(ping);
     bus.off("update", onUpdate);
     bus.off("log", onLog);
     ytBus.off("change", onYt);
+    fbBus.off("change", onYt);
   });
 });
 

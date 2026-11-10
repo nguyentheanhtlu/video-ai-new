@@ -864,7 +864,7 @@ export async function projectView(root, slug, ctx) {
 
   /** "Đăng YouTube" card: this video's uploads + a form to queue one. Refills itself on queue changes. */
   const pubBox = el("div", { class: "card stack" });
-  let pubForm = { channelId: script.metadata.channelId ?? "", when: "auto", at: "", privacy: "" };
+  let pubForm = { platform: "youtube", channelId: script.metadata.channelId ?? "", when: "auto", at: "", privacy: "" };
   async function drawPublish() {
     let yt, channels;
     try {
@@ -872,8 +872,18 @@ export async function projectView(root, slug, ctx) {
     } catch {
       return clear(pubBox);
     }
-    const head = el("h3", {}, "📤 Đăng YouTube");
-    if (!yt.configured) return clear(pubBox, head, el("p", { class: "small muted", style: { margin: 0 } }, "Chưa cấu hình (thiếu credentials/client_secret.json)."));
+    const head = el("h3", {}, "📤 Đăng video");
+    const fbOn = !!yt.facebook?.configured;
+    if (!yt.configured && !fbOn) return clear(pubBox, head, el("p", { class: "small muted", style: { margin: 0 } }, "Chưa cấu hình YouTube / Facebook."));
+    if (pubForm.platform === "facebook" && !fbOn) pubForm.platform = "youtube";
+    if (pubForm.platform === "youtube" && !yt.configured) pubForm.platform = "facebook";
+    const isFb = pubForm.platform === "facebook";
+    const conns = isFb ? yt.facebook.connections : yt.connections;
+    const slots = isFb ? yt.facebook.nextSlots : yt.nextSlots;
+    const platSeg = yt.configured && fbOn
+      ? el("div", { class: "seg" }, [["youtube", "YouTube"], ["facebook", "Facebook"]].map(([v, l]) =>
+        el("button", { class: pubForm.platform === v ? "active" : "", onclick: () => { pubForm.platform = v; drawPublish(); } }, l)))
+      : null;
     const mine = yt.uploads.filter((u) => u.slug === slug);
     const name = (id) => channels.find((c) => c.id === id)?.name ?? id;
     const rows = mine.map((u) => {
@@ -881,23 +891,24 @@ export async function projectView(root, slug, ctx) {
       return el("div", { class: "stack", style: { gap: "2px" } },
         el("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } },
           el("span", { class: cls }, u.status === "uploading" && u.progress != null ? `${label} ${u.progress}%` : label),
-          el("span", { class: "small" }, name(u.channelId)),
+          el("span", { class: "small" }, `${u.platform === "facebook" ? "Facebook" : "YouTube"} · ${name(u.channelId)}`),
           u.publishAt ? el("span", { class: "small faint" }, `công khai ${fmtVN(u.publishAt)}`) : null,
-          u.videoId ? el("a", { class: "small", href: `https://studio.youtube.com/video/${u.videoId}/edit`, target: "_blank" }, "Mở Studio ↗") : null),
+          u.videoId ? el("a", { class: "small", href: u.url ?? `https://studio.youtube.com/video/${u.videoId}/edit`, target: "_blank" }, "Mở ↗") : null),
         u.error ? el("div", { class: "small", style: { color: "var(--bad)" } }, u.error) : null,
         (u.warnings ?? []).map((w) => el("div", { class: "small", style: { color: "var(--warn)" } }, w)));
     });
-    const connected = channels.filter((c) => yt.connections?.[c.id] && !yt.connections[c.id].broken);
+    const connected = channels.filter((c) => conns?.[c.id] && !conns[c.id].broken);
+    const platName = isFb ? "Facebook" : "YouTube";
     if (!connected.length) {
-      return clear(pubBox, head, ...rows, el("p", { class: "small muted", style: { margin: 0 } },
-        "Chưa kênh nào kết nối YouTube. ", el("a", { href: "#/channels" }, "Vào trang Kênh"), " bấm Kết nối YouTube."));
+      return clear(pubBox, head, ...rows, platSeg, el("p", { class: "small muted", style: { margin: 0 } },
+        `Chưa kênh nào kết nối ${platName}. `, el("a", { href: "#/channels" }, "Vào trang Kênh"), ` bấm Kết nối ${platName}.`));
     }
     if (!connected.some((c) => c.id === pubForm.channelId)) pubForm.channelId = connected[0].id;
     const ch = connected.find((c) => c.id === pubForm.channelId);
     const chSel = el("select", { onchange: (e) => { pubForm.channelId = e.target.value; drawPublish(); } },
-      connected.map((c) => el("option", { value: c.id }, `${c.language === "en" ? "🇬🇧" : "🇻🇳"} ${c.name} → ${yt.connections[c.id].youtube.title}`)));
+      connected.map((c) => el("option", { value: c.id }, `${c.language === "en" ? "🇬🇧" : "🇻🇳"} ${c.name} → ${isFb ? conns[c.id].page.name : conns[c.id].youtube.title}`)));
     chSel.value = pubForm.channelId;
-    const slot = yt.nextSlots?.[ch.id];
+    const slot = slots?.[ch.id];
     if (pubForm.when === "auto" && !slot) pubForm.when = "now";
     const whenSel = el("select", { onchange: (e) => { pubForm.when = e.target.value; drawPublish(); } },
       slot ? el("option", { value: "auto" }, `Giờ trống kế tiếp của kênh (${fmtVN(slot)})`) : null,
@@ -913,7 +924,7 @@ export async function projectView(root, slug, ctx) {
         el("option", { value: "public" }, "Công khai"), el("option", { value: "unlisted" }, "Không công khai"), el("option", { value: "private" }, "Riêng tư"))
       : null;
     if (privSel) privSel.value = pubForm.privacy;
-    const already = mine.some((u) => u.channelId === ch.id && u.status !== "failed");
+    const already = mine.some((u) => u.channelId === ch.id && (u.platform ?? "youtube") === pubForm.platform && u.status !== "failed");
     const btn = el("button", { class: "btn primary", disabled: already, onclick: async () => {
       let publishAt;
       if (pubForm.when === "auto") publishAt = "auto";
@@ -923,18 +934,18 @@ export async function projectView(root, slug, ctx) {
       }
       btn.disabled = true;
       try {
-        await guard(() => api("POST", "/api/youtube/uploads", { slug, channelId: ch.id, publishAt, privacy: pubForm.privacy || undefined }), "Đã xếp vào hàng đợi đăng YouTube");
+        await guard(() => api("POST", "/api/youtube/uploads", { slug, platform: pubForm.platform, channelId: ch.id, publishAt, privacy: pubForm.privacy || undefined }), `Đã xếp vào hàng đợi đăng ${platName}`);
       } catch {
         btn.disabled = false;
       }
       drawPublish();
-    } }, already ? "Đã đăng / đang chờ đăng lên kênh này" : "📤 Đăng YouTube");
-    clear(pubBox, head, ...rows,
+    } }, already ? `Đã đăng / đang chờ đăng ${platName}` : `📤 Đăng ${platName}`);
+    clear(pubBox, head, ...rows, platSeg,
       el("label", { class: "field" }, el("span", {}, "Kênh"), chSel),
       el("label", { class: "field" }, el("span", {}, "Công khai lúc"), whenSel),
       atInput, privSel ? el("label", { class: "field" }, el("span", {}, "Hiển thị"), privSel) : null,
       btn,
-      el("p", { class: "small faint", style: { margin: 0 } }, `Quota hôm nay còn ~${Math.floor(yt.quota.remaining / 1650)} video. `, el("a", { href: "#/channels" }, "Xem hàng đợi")));
+      el("p", { class: "small faint", style: { margin: 0 } }, isFb ? "Video dọc ≤ 90 giây lên Reels, còn lại lên video thường. " : `Quota YouTube hôm nay còn ~${Math.floor(yt.quota.remaining / 1650)} video. `, el("a", { href: "#/channels" }, "Xem hàng đợi")));
   }
   const offYt = onYoutube(() => { if (pubBox.isConnected) drawPublish(); });
 
