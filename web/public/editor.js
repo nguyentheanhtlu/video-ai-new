@@ -862,9 +862,10 @@ export async function projectView(root, slug, ctx) {
       ));
   }
 
+  const commentTa = el("textarea", { rows: 3, oninput: (e) => (pubForm.comment = e.target.value) });
   /** "Đăng YouTube" card: this video's uploads + a form to queue one. Refills itself on queue changes. */
   const pubBox = el("div", { class: "card stack" });
-  let pubForm = { platform: "youtube", channelId: script.metadata.channelId ?? "", when: "auto", at: "", privacy: "" };
+  let pubForm = { platform: "youtube", channelId: script.metadata.channelId ?? "", when: "auto", at: "", privacy: "", link: script.metadata.affiliateLink ?? "", comment: null, commentFor: "" };
   async function drawPublish() {
     let yt, channels;
     try {
@@ -925,6 +926,21 @@ export async function projectView(root, slug, ctx) {
       : null;
     if (privSel) privSel.value = pubForm.privacy;
     const already = mine.some((u) => u.channelId === ch.id && (u.platform ?? "youtube") === pubForm.platform && u.status !== "failed");
+    // Facebook first comment: the channel's template with this video's link, editable here.
+    const fillComment = () => {
+      const tpl = ch.commentTemplate ?? "👉 Link sản phẩm: {link}";
+      return !tpl.trim() ? "" : tpl.includes("{link}") ? (pubForm.link ? tpl.replaceAll("{link}", pubForm.link) : "") : tpl;
+    };
+    if (pubForm.comment === null || pubForm.commentFor !== ch.id) { pubForm.comment = fillComment(); pubForm.commentFor = ch.id; }
+    commentTa.value = pubForm.comment ?? "";
+    const commentBox = el("div", { class: "stack", style: { gap: "6px" } },
+      el("label", { class: "field" }, el("span", {}, "Link affiliate", el("em", {}, "điền vào {link}")),
+        el("input", { type: "url", value: pubForm.link, placeholder: "https://...", oninput: (e) => {
+          pubForm.link = e.target.value.trim();
+          pubForm.comment = fillComment();
+          commentTa.value = pubForm.comment;
+        } })),
+      el("label", { class: "field" }, el("span", {}, "Bình luận tự động", el("em", {}, isFb ? "tự soạn; để trống = không bình luận" : "tự soạn; YouTube chỉ bình luận được khi video công khai (sau audit)")), commentTa));
     const btn = el("button", { class: "btn primary", disabled: already, onclick: async () => {
       let publishAt;
       if (pubForm.when === "auto") publishAt = "auto";
@@ -934,7 +950,7 @@ export async function projectView(root, slug, ctx) {
       }
       btn.disabled = true;
       try {
-        await guard(() => api("POST", "/api/youtube/uploads", { slug, platform: pubForm.platform, channelId: ch.id, publishAt, privacy: pubForm.privacy || undefined }), `Đã xếp vào hàng đợi đăng ${platName}`);
+        await guard(() => api("POST", "/api/youtube/uploads", { slug, platform: pubForm.platform, channelId: ch.id, publishAt, privacy: pubForm.privacy || undefined, comment: pubForm.comment ?? "" }), `Đã xếp vào hàng đợi đăng ${platName}`);
       } catch {
         btn.disabled = false;
       }
@@ -944,6 +960,7 @@ export async function projectView(root, slug, ctx) {
       el("label", { class: "field" }, el("span", {}, "Kênh"), chSel),
       el("label", { class: "field" }, el("span", {}, "Công khai lúc"), whenSel),
       atInput, privSel ? el("label", { class: "field" }, el("span", {}, "Hiển thị"), privSel) : null,
+      commentBox,
       btn,
       el("p", { class: "small faint", style: { margin: 0 } }, isFb ? "Video dọc ≤ 90 giây lên Reels, còn lại lên video thường. " : `Quota YouTube hôm nay còn ~${Math.floor(yt.quota.remaining / 1650)} video. `, el("a", { href: "#/channels" }, "Xem hàng đợi")));
   }

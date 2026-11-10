@@ -40,6 +40,8 @@ export interface Script {
     tags?: string[];
     sources?: string[];
     channelId?: string;
+    /** Affiliate / product link: only used in the auto comment ({link}). */
+    affiliateLink?: string;
   };
   voice: { provider: "omnivoice"; speed: number; override?: VoiceOverride };
   language?: "vi" | "en";

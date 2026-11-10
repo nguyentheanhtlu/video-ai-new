@@ -37,6 +37,8 @@ export const ChannelSchema = z.object({
   privacy: z.enum(["public", "unlisted", "private"]).default("public"),
   /** YouTube category: 22 People & Blogs, 25 News & Politics, 17 Sports, 24 Entertainment, 27 Education, 28 Science & Tech. */
   categoryId: z.string().regex(/^\d+$/).default("22"),
+  /** First comment posted under each Facebook post; {link} = the video's affiliate link. Empty = no comment. */
+  commentTemplate: z.string().max(2000).default("👉 Link sản phẩm: {link}"),
   /** Default script style for this channel's videos (news, affiliate, review…). */
   scriptStyle: z.enum(STYLE_IDS).default("news"),
   /** Tick YouTube's "altered or synthetic content" box on every upload (AI voice / AI images). */

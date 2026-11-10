@@ -23,7 +23,7 @@ const V = "v23.0";
 const GRAPH = `https://graph.facebook.com/${V}`;
 const GRAPH_VIDEO = `https://graph-video.facebook.com/${V}`;
 const RUPLOAD = `https://rupload.facebook.com/video-upload/${V}`;
-const SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "business_management"];
+const SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement", "business_management"];
 const TOKEN_DIR = join(ROOT, "credentials", "facebook");
 const CHUNK = 8 * 1024 * 1024;
 /** Reels published through the API must be 9:16 and 3–90 s; longer vertical videos go up as normal videos. */
@@ -154,6 +154,29 @@ export async function fbPick(pick: string, pageId: string) {
   if (!page) throw new HttpError(400, "Page không hợp lệ");
   pendingPick.delete(pick);
   return { channelId: p.channelId, page: await fbSelect(p.channelId, page) };
+}
+
+// ── Comments ───────────────────────────────────────────────────────────────
+/** Comment as the Page under one of its videos / reels. Needs pages_manage_engagement. */
+export async function fbComment(channelId: string, objectId: string, message: string): Promise<string> {
+  const conn = getFbConnection(channelId);
+  if (!conn) throw new UploadError("Kênh chưa kết nối Facebook.", false);
+  const r = await fetch(`${GRAPH}/${objectId}/comments`, {
+    method: "POST",
+    body: new URLSearchParams({ access_token: conn.pageToken, message }),
+  });
+  if (!r.ok) {
+    const err = await fbError(r, conn);
+    // Video still processing / not yet public: nothing to comment on yet.
+    if (/(processing|not exist|unsupported post|cannot be loaded|does not exist)/i.test(err.message)) {
+      throw new UploadError(err.message, true);
+    }
+    if (/pages_manage_engagement|thiếu quyền/.test(err.message)) {
+      throw new UploadError(`${err.message} — app Meta cần quyền pages_manage_engagement: thêm quyền này trong trường hợp sử dụng, rồi bấm Ngắt + Kết nối Facebook lại.`, false);
+    }
+    throw err;
+  }
+  return ((await r.json()) as { id: string }).id;
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────

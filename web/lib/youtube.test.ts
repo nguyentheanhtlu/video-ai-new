@@ -45,3 +45,13 @@ describe("nextSlot", () => {
     expect(nextSlot({ ...channel, publishTimes: [] }, [])).toBeUndefined();
   });
 });
+
+describe("buildComment", () => {
+  it("fills {link}, keeps free text, and skips when the link is missing", async () => {
+    const { buildComment } = await import("./youtube.js");
+    expect(buildComment({ commentTemplate: "🔥 Deal 👉 {link}" }, "https://s.shopee.vn/x")).toBe("🔥 Deal 👉 https://s.shopee.vn/x");
+    expect(buildComment({ commentTemplate: "🔥 Deal 👉 {link}" }, undefined)).toBe("");
+    expect(buildComment({ commentTemplate: "Inbox page để nhận mã giảm giá" }, undefined)).toBe("Inbox page để nhận mã giảm giá");
+    expect(buildComment({ commentTemplate: "  " }, "https://a")).toBe("");
+  });
+});

@@ -153,6 +153,7 @@ async function newView(root) {
     autoRender: true,
     templateId: "",
     keepScript: true,
+    fromIdea: false,
     scriptStyle: styles.some((x) => x.id === localStorage.getItem("scriptStyle")) ? localStorage.getItem("scriptStyle") : "news",
   };
   // Remember the sample a channel works from, as long as it still exists.
@@ -176,6 +177,8 @@ async function newView(root) {
   const blankTitle = el("input", { type: "text", placeholder: "Tên video", value: "" });
   const fileJson = el("input", { type: "file", accept: ".json,application/json" });
   const longUrls = el("textarea", { rows: 5, placeholder: "https://vnexpress.net/...\nhttps://bongda.com.vn/...\n(mỗi dòng 1 link, tối đa 8 — càng nhiều nguồn, video dài càng chắc nội dung)" });
+  const affLink = el("input", { type: "url", placeholder: "https://s.shopee.vn/... (tuỳ chọn)" });
+  const affField = () => field("Link affiliate", affLink, "chỉ dùng cho bình luận tự động ({link})");
   const longPrompt = el("textarea", { rows: 3, placeholder: "vd: Ronaldo treo áo số 7 — lùi lại để trao trách nhiệm cho thế hệ sau, giọng xúc động. Để trống thì AI tóm tắt theo các bài báo." });
   const long = {
     channelId: channels.some((c) => c.id === localStorage.getItem("channelId")) ? localStorage.getItem("channelId") : channels[0]?.id ?? "",
@@ -231,6 +234,7 @@ async function newView(root) {
       el("h3", {}, "Tuỳ chọn video dài"),
       field("Kênh", sel, ch ? `${ch.language === "en" ? "tiếng Anh" : "tiếng Việt"}` : "theo Cài đặt"),
       stylePicker(() => long.scriptStyle, (v) => (long.scriptStyle = v)),
+      affField(),
       channels.length ? null : el("div", { class: "callout small" }, "Chưa có hồ sơ kênh. ", el("a", { href: "#/channels" }, "Tạo kênh"), " để mỗi kênh có ngôn ngữ, giọng đọc, chủ đề riêng."),
       field("Độ dài", el("div", { class: "row" },
         el("input", { type: "range", min: 3, max: 15, step: 1, value: long.minutes, oninput: (e) => { long.minutes = Number(e.target.value); minLabel.textContent = `${long.minutes} phút`; } }), minLabel)),
@@ -247,8 +251,12 @@ async function newView(root) {
     (mode === "url" || mode === "text") && !(mode === "text" && opt.keepScript)
       ? stylePicker(() => opt.scriptStyle, (v) => { opt.scriptStyle = v; localStorage.setItem("scriptStyle", v); })
       : null,
-    mode === "text" ? field("Dùng văn bản này thế nào", seg([[true, "Đọc đúng kịch bản của tôi"], [false, "AI viết lại từ bài"]], () => opt.keepScript, (v) => { opt.keepScript = v; drawForm(); }),
-      opt.keepScript ? "giữ nguyên từng chữ" : null) : null,
+    mode === "url" || mode === "text" ? affField() : null,
+    mode === "text" ? field("Dùng văn bản này thế nào",
+      seg([["keep", "Đọc đúng kịch bản"], ["rewrite", "AI viết lại từ bài"], ["idea", "AI viết từ ý tưởng"]],
+        () => (opt.keepScript ? "keep" : opt.fromIdea ? "idea" : "rewrite"),
+        (v) => { opt.keepScript = v === "keep"; opt.fromIdea = v === "idea"; drawForm(); }),
+      opt.keepScript ? "giữ nguyên từng chữ" : opt.fromIdea ? "ô bên trái là prompt" : "ô bên trái là bài nguồn") : null,
     (mode === "url" || mode === "text") && !(mode === "text" && opt.keepScript) ? el("div", { class: "row between" }, el("span", { class: "muted small" }, "Độ dài"),
       seg(lengths(), () => opt.length, (v) => (opt.length = v))) : null,
     mode !== "import" && !(opt.templateId && mode !== "blank") ? el("div", { class: "row between" }, el("span", { class: "muted small" }, "Khung hình"),
@@ -257,7 +265,7 @@ async function newView(root) {
       el("div", { class: "grid-2" },
         field("Tên kênh", el("input", { type: "text", value: opt.channel, oninput: (e) => (opt.channel = e.target.value) })),
         field("URL kênh (outro)", el("input", { type: "text", value: opt.channelUrl, oninput: (e) => (opt.channelUrl = e.target.value) }))),
-      mode === "text" && opt.keepScript ? null : field("Ý tưởng của kênh cho AI", el("textarea", { rows: 3, value: opt.extraInstructions, placeholder: "vd: Tập trung vào bức tâm thư và quyết định treo áo số 7, giọng xúc động, kết bằng câu hỏi cho khán giả…", oninput: (e) => (opt.extraInstructions = e.target.value) }), "AI viết theo ý tưởng này, bài báo chỉ để tham khảo"),
+      mode === "text" && (opt.keepScript || opt.fromIdea) ? null : field("Ý tưởng của kênh cho AI", el("textarea", { rows: 3, value: opt.extraInstructions, placeholder: "vd: Tập trung vào bức tâm thư và quyết định treo áo số 7, giọng xúc động, kết bằng câu hỏi cho khán giả…", oninput: (e) => (opt.extraInstructions = e.target.value) }), "AI viết theo ý tưởng này, bài báo chỉ để tham khảo"),
       el("label", { class: "check" }, el("input", { type: "checkbox", checked: opt.autoRender, onchange: (e) => (opt.autoRender = e.target.checked) }), mode === "text" && opt.keepScript ? "Render video ngay sau khi chia cảnh xong" : "Render video ngay sau khi AI viết xong kịch bản"),
     ] : null,
   );
@@ -275,7 +283,15 @@ async function newView(root) {
         field("Ý tưởng của kênh", longPrompt, "có ý tưởng thì AI viết theo ý tưởng, link chỉ để tham khảo"),
         el("p", { class: "small muted", style: { margin: 0 } }, "AI đọc các bài, lập dàn ý theo chương, viết lời dẫn, rồi lấy ảnh thật cho cảnh về người/sự kiện và vẽ ảnh AI (đã kiểm tra khớp lời đọc) cho các cảnh còn lại. Chỉ có chủ đề, không có link → AI viết từ kiến thức chung (nên kiểm tra lại dữ kiện).")),
       url: el("div", { class: "card stack" }, field("Link bài báo", urlInput), el("p", { class: "small muted", style: { margin: 0 } }, "Server tải trang và lấy nội dung chính. Trang cần đăng nhập / chặn bot → dùng tab Dán văn bản.")),
-      text: el("div", { class: "card stack" }, field("Nội dung bài", textArea), el("div", { class: "row small muted" }, "Hoặc chọn file .txt:", fileTxt)),
+      text: (() => {
+        const idea = opt.fromIdea && !opt.keepScript;
+        textArea.placeholder = idea
+          ? "Viết ý tưởng / prompt cho video, vd:\nVideo giới thiệu nồi chiên không dầu 5L cho người lười nấu ăn. Mở đầu bằng cảnh tan làm về mệt, không muốn nấu. Nêu 3 món làm trong 15 phút, nhấn mạnh dễ rửa. Giọng vui, thân thiện."
+          : opt.keepScript ? "Dán kịch bản của bạn — tool đọc đúng từng chữ…" : "Dán nội dung bài báo / tài liệu nguồn vào đây…";
+        return el("div", { class: "card stack" },
+          field(idea ? "Ý tưởng / prompt cho video" : opt.keepScript ? "Kịch bản của bạn" : "Nội dung bài (nguồn)", textArea),
+          el("div", { class: "row small muted" }, "Hoặc chọn file .txt:", fileTxt));
+      })(),
       blank: el("div", { class: "card stack" }, field("Tên video", blankTitle), el("p", { class: "small muted", style: { margin: 0 } }, "Tạo kịch bản mẫu 3 scene (hook → body → outro) rồi tự viết trong trình soạn thảo. Không cần AI.")),
       import: el("div", { class: "card stack" }, field("File script.json", fileJson), el("p", { class: "small muted", style: { margin: 0 } }, "Ví dụ: script.json do /create-template-video trong Claude Code tạo ra.")),
     }[mode];
@@ -297,13 +313,13 @@ async function newView(root) {
       const bad = urls.filter((u) => !/^https?:\/\//.test(u));
       if (bad.length) return toast(`Link không hợp lệ: ${bad[0]}`, "warn");
       if (!urls.length && longPrompt.value.trim().length < 10) return toast("Nhập ít nhất 1 link, hoặc mô tả chủ đề video", "warn");
-      body = { mode, urls, prompt: longPrompt.value.trim(), channelId: long.channelId || undefined, minutes: long.minutes, extraInstructions: opt.extraInstructions, autoRender: opt.autoRender, scriptStyle: long.scriptStyle };
+      body = { mode, urls, prompt: longPrompt.value.trim(), channelId: long.channelId || undefined, minutes: long.minutes, extraInstructions: opt.extraInstructions, autoRender: opt.autoRender, scriptStyle: long.scriptStyle, affiliateLink: affLink.value.trim() || undefined };
     } else if (mode === "url") {
       if (!/^https?:\/\//.test(urlInput.value.trim())) return toast("Nhập link bắt đầu bằng http:// hoặc https://", "warn");
-      body = { mode, url: urlInput.value.trim(), ...opt };
+      body = { mode, url: urlInput.value.trim(), ...opt, affiliateLink: affLink.value.trim() || undefined };
     } else if (mode === "text") {
-      if (textArea.value.trim().length < 50) return toast("Nội dung quá ngắn", "warn");
-      body = { mode, text: textArea.value, ...opt };
+      if (textArea.value.trim().length < (opt.fromIdea && !opt.keepScript ? 10 : 50)) return toast(opt.fromIdea ? "Viết ý tưởng / prompt cho video" : "Nội dung quá ngắn", "warn");
+      body = { mode, text: textArea.value, ...opt , affiliateLink: affLink.value.trim() || undefined };
     } else if (mode === "blank") {
       body = { mode, title: blankTitle.value.trim() || "Video mới", aspect: opt.aspect };
     } else {
@@ -355,7 +371,7 @@ async function channelsView(root) {
   const blank = () => ({
     name: "", language: "vi", niche: "", url: "", brandColor: "#0e9f6e", minutes: 8, music: true, subtitles: true,
     visuals: "ai", aiImageSize: "2K", aiHookVideo: false,
-    autoUpload: false, publishTimes: ["19:00"], privacy: "public", categoryId: "22", declareSynthetic: true, scriptStyle: "news",
+    autoUpload: false, publishTimes: ["19:00"], privacy: "public", categoryId: "22", declareSynthetic: true, scriptStyle: "news", commentTemplate: "👉 Link sản phẩm: {link}",
     voice: settings.GENMAX_API_KEY_SET
       ? { engine: "genmax", rate: "+0%", genmax: { provider: settings.GENMAX_PROVIDER, voiceId: settings.GENMAX_VOICE, model: settings.GENMAX_MODEL, language: settings.GENMAX_LANGUAGE } }
       : { engine: "edge", edgeVoice: "vi-VN-HoaiMyNeural", rate: "+5%" },
@@ -432,8 +448,11 @@ async function channelsView(root) {
           el("div", { class: "small faint" },
             `${name(u.channelId)} · ${when}` + (u.nextTryAt && u.status === "pending" ? ` · thử lại ${fmtVN(u.nextTryAt)}` : "") + (u.auto ? " · tự động" : "")),
           u.error ? el("div", { class: "small", style: { color: "var(--bad)" } }, u.error) : null,
-          (u.warnings ?? []).map((w) => el("div", { class: "small", style: { color: "var(--warn)" } }, w))),
+          (u.warnings ?? []).map((w) => el("div", { class: "small", style: { color: "var(--warn)" } }, w)),
+          u.comment ? el("div", { class: "small", style: { color: u.commentStatus === "failed" ? "var(--bad)" : u.commentStatus === "done" ? "var(--ok)" : "var(--muted)" } },
+            u.commentStatus === "done" ? "💬 Đã bình luận link" : u.commentStatus === "failed" ? `💬 Bình luận lỗi: ${u.commentError ?? ""}` : u.status === "done" && u.commentDueAt ? `💬 Sẽ bình luận lúc ${fmtVN(u.commentDueAt)}` : "💬 Bình luận sau khi đăng") : null),
         el("div", { class: "row" },
+          u.commentStatus === "failed" ? el("button", { class: "btn sm", onclick: () => guard(() => api("POST", `/api/youtube/uploads/${u.id}/retry-comment`), "Sẽ bình luận lại") }, "Bình luận lại") : null,
           u.videoId ? el("a", { class: "btn sm", href: u.url ?? `https://studio.youtube.com/video/${u.videoId}/edit`, target: "_blank" }, u.platform === "facebook" ? "Mở Facebook" : "Mở Studio") : null,
           u.status === "failed" ? el("button", { class: "btn sm", onclick: () => guard(() => api("POST", `/api/youtube/uploads/${u.id}/retry`), "Đã xếp lại hàng đợi") }, "Thử lại") : null,
           u.status === "pending" || u.status === "failed"
@@ -598,6 +617,11 @@ async function channelsView(root) {
           field("Giờ công khai mỗi ngày (giờ VN)", times, "mỗi video lấy giờ trống kế tiếp; để trống = công khai ngay"),
           field("Chế độ hiển thị", privacy, "khi không đặt lịch"),
           field("Danh mục YouTube", cat)),
+        field("Bình luận tự động dưới video (Facebook + YouTube)", (() => {
+          const ta = el("textarea", { rows: 3, placeholder: "vd: 🔥 Săn deal tại đây 👉 {link}\nCòn mã giảm giá trong link nhé!", oninput: (e) => (ch.commentTemplate = e.target.value) });
+          ta.value = ch.commentTemplate ?? "👉 Link sản phẩm: {link}";
+          return ta;
+        })(), "tự soạn; {link} = link affiliate của từng video; để trống = không bình luận"),
         el("label", { class: "check" }, el("input", { type: "checkbox", checked: ch.declareSynthetic !== false, onchange: (e) => (ch.declareSynthetic = e.target.checked) }),
           "Khai báo \"nội dung đã chỉnh sửa / tạo bằng AI\" (nên bật vì giọng và ảnh là AI)"),
         !ch.id ? el("p", { class: "small faint", style: { margin: 0 } }, "Lưu kênh trước, rồi bấm \"Kết nối YouTube\" ở danh sách kênh.")

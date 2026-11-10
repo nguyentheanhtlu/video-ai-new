@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDurationSec } from "../../src/assets/audio-tools.js";
 import { getChannel, type Channel } from "./channels.js";
-import { fbUpload, getFbConnection } from "./facebook.js";
+import { fbComment, fbUpload, getFbConnection } from "./facebook.js";
 import { HttpError, projectDir, ROOT } from "./paths.js";
 import { UploadError } from "./upload-error.js";
 
@@ -27,12 +27,17 @@ const TOKEN_DIR = join(CRED_DIR, "youtube");
 const QUEUE_FILE = join(ROOT, "data", "youtube-queue.json");
 const QUOTA_FILE = join(ROOT, "data", "youtube-quota.json");
 
-const SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/youtube.upload",
+  "https://www.googleapis.com/auth/youtube",
+  // commentThreads.insert (first comment with the affiliate link)
+  "https://www.googleapis.com/auth/youtube.force-ssl",
+];
 const API = "https://www.googleapis.com/youtube/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/youtube/v3";
 
 /** Units per call (developers.google.com/youtube/v3/determine_quota_cost). */
-export const COST = { upload: 1600, thumbnail: 50, list: 1 };
+export const COST = { upload: 1600, thumbnail: 50, list: 1, comment: 50 };
 const DAILY_QUOTA = () => Number(process.env.YOUTUBE_DAILY_QUOTA) || 10_000;
 const CHUNK = 16 * 1024 * 1024; // multiple of 256 KiB, as resumable uploads require
 const MAX_ATTEMPTS = 6;
@@ -224,6 +229,7 @@ interface Manifest {
   containsSyntheticMedia?: boolean;
   thumbnail?: string;
   vertical: boolean;
+  affiliateLink?: string;
 }
 
 const clean = (s: string) => s.replace(/[<>]/g, "").replace(/\*/g, "");
@@ -276,6 +282,7 @@ async function readManifest(slug: string): Promise<Manifest> {
     containsSyntheticMedia: yt?.containsSyntheticMedia,
     thumbnail: thumb ? join(dir, thumb) : undefined,
     vertical,
+    affiliateLink: script.metadata?.affiliateLink?.trim() || undefined,
   };
 }
 
@@ -304,6 +311,13 @@ export interface UploadItem {
   videoId?: string;
   /** Where to see it (Studio link for YouTube, the post for Facebook). */
   url?: string;
+  /** Facebook: first comment posted once the video is live (affiliate link). */
+  comment?: string;
+  commentStatus?: "waiting" | "done" | "failed";
+  commentDueAt?: string;
+  commentTries?: number;
+  commentId?: string;
+  commentError?: string;
   warnings?: string[];
   createdAt: string;
   uploadedAt?: string;
@@ -373,6 +387,8 @@ export async function enqueueUpload(opts: {
   /** ISO time, "auto" = next free slot of the channel, undefined = right away. */
   publishAt?: string;
   auto?: boolean;
+  /** Facebook first comment; undefined = build from the channel template + the video's affiliate link. */
+  comment?: string;
 }): Promise<UploadItem> {
   const platform = opts.platform ?? "youtube";
   const channel = getChannel(opts.channelId);
@@ -403,10 +419,23 @@ export async function enqueueUpload(opts: {
     createdAt: new Date().toISOString(),
     auto: opts.auto,
   };
+  const text = (opts.comment ?? buildComment(channel, m.affiliateLink)).trim();
+  // YouTube: nobody can comment on a private video, so only public/unlisted/scheduled ones get one.
+  if (text && (platform === "facebook" || item.publishAt || item.privacy !== "private")) {
+    Object.assign(item, { comment: text.slice(0, platform === "youtube" ? 9000 : 8000), commentStatus: "waiting" as const });
+  }
   items().push(item);
   await persist();
   kick();
   return item;
+}
+
+/** The channel's comment template with {link} filled; empty when there is no link to share. */
+export function buildComment(channel: Pick<Channel, "commentTemplate">, link?: string): string {
+  const tpl = channel.commentTemplate ?? "";
+  if (!tpl.trim()) return "";
+  if (tpl.includes("{link}")) return link ? tpl.replaceAll("{link}", link) : "";
+  return tpl;
 }
 
 export async function retryUpload(id: string) {
@@ -554,6 +583,13 @@ async function upload(item: UploadItem, log: (msg: string) => void): Promise<voi
   item.progress = 100;
   log(`✓ Đã tải lên: https://youtu.be/${result.id}`);
 
+  if (item.comment) {
+    const at = item.publishAt ? new Date(item.publishAt).getTime() + 2 * 60_000 : Date.now() + 2 * 60_000;
+    item.commentStatus = "waiting";
+    item.commentDueAt = new Date(at).toISOString();
+    item.commentTries = 0;
+  }
+
   // Thumbnail: needs a phone-verified channel; a failure here keeps the upload.
   if (m.thumbnail) {
     try {
@@ -599,6 +635,76 @@ async function uploadFacebook(item: UploadItem) {
   item.url = r.url;
   item.progress = 100;
   log(`✓ Đã đăng Facebook: ${r.url}`);
+  if (item.comment) {
+    // Comment once the post is live: right after processing, or just after the scheduled time.
+    const at = item.publishAt ? new Date(item.publishAt).getTime() + 2 * 60_000 : Date.now() + 90_000;
+    item.commentStatus = "waiting";
+    item.commentDueAt = new Date(at).toISOString();
+    item.commentTries = 0;
+  }
+}
+
+/** Top-level comment by the channel under its own video (needs the youtube.force-ssl scope). */
+async function ytComment(channelId: string, videoId: string, text: string): Promise<string> {
+  if (quota().remaining < COST.comment) throw new UploadError("Hết quota YouTube hôm nay — bình luận sau khi quota reset.", true, 60 * 60_000);
+  const r = await fetch(`${API}/commentThreads?part=snippet`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await accessToken(channelId)}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ snippet: { videoId, topLevelComment: { snippet: { textOriginal: text } } } }),
+  });
+  await addQuota(COST.comment);
+  if (!r.ok) {
+    const body = (await r.json().catch(() => null)) as { error?: { message?: string; errors?: { reason?: string }[] } } | null;
+    const reason = body?.error?.errors?.[0]?.reason ?? "";
+    const msg = `YouTube ${r.status}${reason ? ` ${reason}` : ""}: ${body?.error?.message ?? r.statusText}`;
+    if (reason === "insufficientPermissions" || r.status === 401) {
+      throw new UploadError(`${msg} — thêm quyền youtube.force-ssl vào màn hình OAuth của Google Cloud rồi bấm Ngắt + Kết nối YouTube lại.`, false);
+    }
+    if (reason === "commentsDisabled") throw new UploadError(`${msg} — video đang tắt bình luận.`, false);
+    if (reason === "forbidden" || reason === "videoNotFound" || r.status === 404) {
+      // Still processing, or private (projects not yet audited lock uploads to private).
+      throw new UploadError(`${msg} — video chưa công khai (dự án chưa qua audit thì video bị khoá riêng tư) hoặc chưa xử lý xong.`, true);
+    }
+    throw new UploadError(msg, r.status >= 500 || r.status === 429);
+  }
+  return ((await r.json()) as { id: string }).id;
+}
+
+/** Post the first comments that are due. Retries while the video is still processing / not yet public. */
+async function workComments() {
+  const now = Date.now();
+  const due = items().filter((i) => i.status === "done" && i.commentStatus === "waiting" && i.videoId && new Date(i.commentDueAt ?? 0).getTime() <= now);
+  for (const item of due) {
+    try {
+      item.commentId = platformOf(item) === "facebook"
+        ? await fbComment(item.channelId, item.videoId!, item.comment!)
+        : await ytComment(item.channelId, item.videoId!, item.comment!);
+      item.commentStatus = "done";
+      item.commentError = undefined;
+      log(`✓ [${PLATFORM_NAME[platformOf(item)]}] Đã bình luận dưới "${item.title}"`);
+    } catch (e) {
+      const err = e instanceof UploadError ? e : new UploadError((e as Error).message, true);
+      item.commentTries = (item.commentTries ?? 0) + 1;
+      item.commentError = err.message;
+      if (err.retry && item.commentTries < 8) {
+        item.commentDueAt = new Date(Date.now() + Math.min(3600_000, 60_000 * 2 ** item.commentTries)).toISOString();
+        log(`⚠ Chưa bình luận được dưới "${item.title}" (${err.message}) — thử lại lúc ${new Date(item.commentDueAt).toLocaleTimeString("vi-VN")}`);
+      } else {
+        item.commentStatus = "failed";
+        log(`✗ Không bình luận được dưới "${item.title}": ${err.message}`);
+      }
+    }
+    await persist();
+  }
+}
+
+export async function retryComment(id: string) {
+  const it = items().find((i) => i.id === id);
+  if (!it?.comment || it.status !== "done") throw new HttpError(400, "Lượt đăng này không có bình luận để thử lại");
+  Object.assign(it, { commentStatus: "waiting", commentDueAt: new Date().toISOString(), commentTries: 0, commentError: undefined });
+  await persist();
+  kick();
+  return it;
 }
 
 // ── Worker: one upload at a time ───────────────────────────────────────────
@@ -657,6 +763,7 @@ async function work() {
       }
       await persist();
     }
+    await workComments();
   } finally {
     busy = false;
   }
