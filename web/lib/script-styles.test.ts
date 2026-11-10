@@ -19,7 +19,7 @@ describe("script styles", () => {
 
   it("affiliate asks for a buy CTA and the affiliate disclosure", () => {
     const block = styleOverride("affiliate").join("\n");
-    expect(block).toMatch(/giỏ hàng|link ở bio/);
+    expect(block).toMatch(/link ở bình luận/);
     expect(block).toContain("link tiếp thị liên kết");
   });
 });

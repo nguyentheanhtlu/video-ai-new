@@ -60,6 +60,7 @@ const channel = {
   categoryId: "22",
   declareSynthetic: true,
   scriptStyle: "news" as const,
+  commentTemplate: "",
 };
 
 describe("generateLongScript", () => {

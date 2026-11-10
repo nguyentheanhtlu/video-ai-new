@@ -64,6 +64,7 @@ import {
   publicConnection,
   quota,
   removeUpload,
+  retryComment,
   retryUpload,
   startUploadWorker,
   uploadLog,
@@ -445,6 +446,7 @@ app.post("/api/youtube/uploads", h(async (req) => {
     slug: String(b.slug ?? ""),
     channelId: String(b.channelId ?? ""),
     platform: b.platform === "facebook" ? "facebook" : "youtube",
+    comment: typeof b.comment === "string" ? b.comment : undefined,
     privacy,
     publishAt: b.publishAt ? String(b.publishAt) : undefined,
   });
@@ -487,6 +489,7 @@ app.post("/api/facebook/disconnect/:channel", h(async (req) => {
   return { ok: true };
 }));
 app.post("/api/youtube/uploads/:id/retry", h((req) => retryUpload(param(req, "id"))));
+app.post("/api/youtube/uploads/:id/retry-comment", h((req) => retryComment(param(req, "id"))));
 app.delete("/api/youtube/uploads/:id", h(async (req) => {
   await removeUpload(param(req, "id"));
   return { ok: true };
@@ -534,6 +537,7 @@ function settingsChannel(): Channel {
     categoryId: "22",
     declareSynthetic: true,
     scriptStyle: "news",
+    commentTemplate: "",
   };
 }
 
@@ -554,6 +558,12 @@ function blankScript(title: string, aspect: Script["aspect"]): Script {
       { id: "outro", type: "outro", voiceText: `Theo dõi ${channel} để cập nhật tin tức nóng hổi mỗi ngày.`, templateId: "news-outro", inputs: {} },
     ],
   };
+}
+
+/** The affiliate link typed on the create page travels with the project (comment / description). */
+function withAffiliate(script: Script, body: Record<string, unknown>) {
+  const link = typeof body.affiliateLink === "string" ? body.affiliateLink.trim() : "";
+  if (link && /^https?:\/\//i.test(link)) script.metadata.affiliateLink = link.slice(0, 500);
 }
 
 app.post("/api/projects", h(async (req) => {
@@ -600,6 +610,7 @@ app.post("/api/projects", h(async (req) => {
       } catch (e) {
         ctx.log(`Không tìm được ảnh (${(e as Error).message})`);
       }
+      withAffiliate(script, body);
       await createProject(script, { slug, sourceKind: mode, sourceText: text });
       ctx.log(`✓ Đã tạo dự án ${slug}`);
       if (body.autoRender) enqueuePipeline(slug);
@@ -610,6 +621,12 @@ app.post("/api/projects", h(async (req) => {
       ctx.progress(1, 4, "Tải bài báo");
       ctx.log(`Tải ${body.url} ...`);
       article = await fetchArticle(String(body.url));
+    } else if (body.fromIdea) {
+      // The pasted text IS the prompt: no source article, the AI writes from the idea.
+      const idea = String(body.text ?? "").trim();
+      const firstLine = idea.split("\n").find((l) => l.trim())?.trim() ?? "Video mới";
+      opts.extraInstructions = [idea, opts.extraInstructions].filter(Boolean).join("\n\n");
+      article = { title: firstLine.slice(0, 80), content: "(Không có tài liệu tham khảo — viết hoàn toàn theo ý tưởng ở trên.)", image: null, domain: "local", url: "", images: [] };
     } else {
       article = articleFromText(String(body.text ?? ""));
     }
@@ -636,6 +653,7 @@ app.post("/api/projects", h(async (req) => {
     } catch (e) {
       ctx.log(`Không tìm thêm được ảnh (${(e as Error).message}) — dùng ảnh của bài`);
     }
+    withAffiliate(script, body);
     await createProject(script, {
       slug,
       sourceKind: mode,
@@ -746,6 +764,7 @@ function enqueueLong(body: Record<string, unknown>) {
         ctx.progress(6, steps, `Tìm lại ảnh cho ${empty.length} cảnh còn trống`);
         await photoRound(empty);
       }
+      withAffiliate(script as unknown as Script, body);
       await createProject(script as unknown as Script, {
         slug,
         sourceKind: urls.length ? "url" : "text",
