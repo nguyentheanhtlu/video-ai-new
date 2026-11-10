@@ -12,3 +12,7 @@ SFX/
 
 # Filtered SFX (from npm run sfx:filter) — third-party clips, not committed
 assets/sfx/
+
+# Channel profiles (per machine) and background music (licensed per user)
+data/
+assets/music/

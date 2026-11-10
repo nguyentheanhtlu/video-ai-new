@@ -2,11 +2,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { TemplateScriptSchema } from "../../src/render/template-script-schema.js";
+import { SlideshowScriptSchema, TemplateScriptSchema } from "../../src/render/template-script-schema.js";
+import type { VoiceOverride } from "../../src/tts/voice.js";
 import { toSlug } from "../../src/utils/slug.js";
 import { getTemplate } from "./templates.js";
 import { HttpError, OUTPUT_DIR, projectDir } from "./paths.js";
 import { readImages } from "./images.js";
+import { readVideos } from "./stock-video.js";
 
 // Loose shape: drafts may be invalid while the user edits them.
 export interface Scene {
@@ -18,15 +20,35 @@ export interface Scene {
   sfx?: { name: string; volume?: number; startOffsetSec?: number };
   /** Web image-search keywords for this scene (not rendered; used to find photos). */
   imageQuery?: string;
+  /** Long-form only: chapter id, stock-footage keywords, photo-or-footage choice. */
+  chapter?: string;
+  videoQuery?: string;
+  visual?: "photo" | "video" | "ai";
+  imagePrompts?: string[];
 }
 export interface Script {
   version: "1.0";
-  renderer: "hyperframes";
+  /** "slideshow" = long-form 16:9 YouTube video rendered with ffmpeg. */
+  renderer: "hyperframes" | "slideshow";
   aspect: "9:16" | "16:9" | "1:1";
-  metadata: { title: string; source: { url: string; domain: string; image: string | null }; channel: string; date?: string };
-  voice: { provider: "omnivoice"; speed: number };
+  metadata: {
+    title: string;
+    source: { url: string; domain: string; image: string | null };
+    channel: string;
+    date?: string;
+    description?: string;
+    tags?: string[];
+    sources?: string[];
+    channelId?: string;
+  };
+  voice: { provider: "omnivoice"; speed: number; override?: VoiceOverride };
+  language?: "vi" | "en";
+  chapters?: { id: string; title: string }[];
+  style?: { subtitles?: boolean; music?: boolean; musicVolume?: number; brandColor?: string; visualStyle?: string };
   scenes: Scene[];
 }
+
+export const isLongForm = (s: Partial<Script>) => s.renderer === "slideshow";
 
 export interface ProjectMeta {
   createdAt: string;
@@ -74,6 +96,9 @@ export async function listProjects() {
       slug,
       title: script.metadata?.title ?? slug,
       scenes: script.scenes?.length ?? 0,
+      renderer: script.renderer ?? "hyperframes",
+      channel: script.metadata?.channel ?? "",
+      durationSec: meta.lastRender?.durationSec ?? null,
       aspect: script.aspect ?? "9:16",
       createdAt: meta.createdAt,
       updatedAt: statSync(join(dir, "script.json")).mtime.toISOString(),
@@ -136,7 +161,7 @@ const sceneFiles = (dir: string, id: string) => ({
 export async function readProject(slug: string) {
   const dir = projectDir(slug);
   const script = await readScript(slug);
-  const files = ["video.mp4", "cover.jpg", "voice.mp3", "script.txt", "script.json", "source.txt", "thumb.jpg"].filter((f) =>
+  const files = ["video.mp4", "cover.jpg", "voice.mp3", "script.txt", "script.json", "source.txt", "thumb.jpg", "thumbnail.jpg", "subtitles.srt", "description.txt", "chapters.txt", "youtube.json"].filter((f) =>
     existsSync(join(dir, f)),
   );
   const scenes = (script.scenes ?? []).map((s) => {
@@ -150,6 +175,7 @@ export async function readProject(slug: string) {
     files,
     sceneCache: scenes,
     images: await readImages(dir),
+    videos: await readVideos(dir),
     validation: validateScript(script),
     warnings: lintScript(script),
   };
@@ -196,7 +222,10 @@ export async function clearCache(slug: string, kind: "voice" | "clip" | "all", s
   const dir = projectDir(slug);
   if (!sceneId) {
     if (kind !== "clip") await rm(join(dir, "voice"), { recursive: true, force: true });
-    if (kind !== "voice") await rm(join(dir, "clips"), { recursive: true, force: true });
+    if (kind !== "voice") {
+      await rm(join(dir, "clips"), { recursive: true, force: true });
+      await rm(join(dir, "shots"), { recursive: true, force: true });
+    }
     return;
   }
   const f = sceneFiles(dir, sceneId);
@@ -212,12 +241,13 @@ export async function deleteProject(slug: string) {
 }
 
 export function validateScript(script: unknown): string[] {
-  const r = TemplateScriptSchema.safeParse(script);
+  const long = isLongForm(script as Partial<Script>);
+  const r = (long ? SlideshowScriptSchema : TemplateScriptSchema).safeParse(script);
   const errors = r.success ? [] : r.error.issues.map((i) => `${i.path.join(".") || "script"}: ${i.message}`);
   const s = script as Partial<Script>;
   const ids = new Set<string>();
   for (const [i, scene] of (s.scenes ?? []).entries()) {
-    if (scene.templateId && !getTemplate(scene.templateId)) errors.push(`scenes.${i}.templateId: không có template "${scene.templateId}"`);
+    if (!long && scene.templateId && !getTemplate(scene.templateId)) errors.push(`scenes.${i}.templateId: không có template "${scene.templateId}"`);
     if (!/^[a-zA-Z0-9_-]+$/.test(scene.id ?? "")) errors.push(`scenes.${i}.id: chỉ dùng chữ, số, - và _`);
     if (ids.has(scene.id)) errors.push(`scenes.${i}.id: trùng id "${scene.id}"`);
     ids.add(scene.id);
@@ -238,6 +268,11 @@ export function lintScript(script: Script): { scene: string; field: string; mess
     if (/[→&%$#+=]/.test(v)) out.push({ scene: s.id, field: "voiceText", message: "Có ký hiệu (→ & % $ # + =) — nên viết ra chữ." });
     if (v && !/[.?!…]$/.test(v.trim())) out.push({ scene: s.id, field: "voiceText", message: "Nên kết câu bằng dấu . hoặc ? để ngắt nghỉ tự nhiên." });
 
+    if (isLongForm(script)) {
+      const media = [s.inputs?.image, ...((s.inputs?.images as unknown[]) ?? []), ...((s.inputs?.videos as unknown[]) ?? [])].filter(Boolean);
+      if (!media.length && s.type !== "outro") out.push({ scene: s.id, field: "inputs", message: "Chưa có ảnh/video — cảnh sẽ dùng lại hình của cảnh trước." });
+      continue;
+    }
     const tpl = getTemplate(s.templateId);
     if (!tpl) continue;
     const hasImageSlot = tpl.slots.some((sl) => sl.type.startsWith("image"));

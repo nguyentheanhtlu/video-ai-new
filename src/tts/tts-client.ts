@@ -13,7 +13,8 @@ export interface TtsClient {
 
 import type { Config } from "../config.js";
 import { OmniVoiceClient } from "./omnivoice-client.js";
+import type { VoiceOverride } from "./voice.js";
 
-export function createTtsClient(cfg: Config): TtsClient {
-  return new OmniVoiceClient({ endpoint: cfg.omnivoiceEndpoint });
+export function createTtsClient(cfg: Config, voice?: VoiceOverride): TtsClient {
+  return new OmniVoiceClient({ endpoint: cfg.omnivoiceEndpoint, voice });
 }

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import pLimit from "p-limit";
 import { TemplateScriptSchema, type TemplateScript } from "./template-script-schema.js";
 import { loadConfig } from "../config.js";
-import { createTtsClient } from "../tts/tts-client.js";
+import { voiceScenes } from "./tts-step.js";
 import {
   getDurationSec,
   concatWithSilence,
@@ -46,37 +46,14 @@ export async function runTemplatePipeline(scriptPath: string): Promise<void> {
 
   // STEP 3 — TTS per scene (idempotent)
   log.step(3, TOTAL_STEPS, "TTS each scene");
-  const ttsClient = createTtsClient(cfg);
-  const limit = pLimit(cfg.ttsConcurrency);
-  const voiceDir = join(outputDir, "voice");
-  await mkdir(voiceDir, { recursive: true });
-  const sceneAudio = await Promise.all(
-    script.scenes.map((scene) =>
-      limit(async () => {
-        const out = join(voiceDir, `scene-${scene.id}.mp3`);
-        const srtOut = join(voiceDir, `scene-${scene.id}.srt`);
-        // The narration each mp3 was made from: script.json may be edited outside the web UI.
-        const textFile = join(voiceDir, `scene-${scene.id}.txt`);
-        if (existsSync(out) && existsSync(textFile) && (await readFile(textFile, "utf8")) !== scene.voiceText) {
-          log.info(`  scene ${scene.id}: lời đọc đã đổi → tạo lại giọng và hình`);
-          await rm(out, { force: true });
-          await rm(join(outputDir, "clips", `scene-${scene.id}.mp4`), { force: true });
-          await rm(join(outputDir, "clips", `scene-${scene.id}-fit.mp4`), { force: true });
-        }
-        if (existsSync(out)) {
-          const dur = await getDurationSec(out);
-          log.info(`  scene ${scene.id}: REUSE mp3 (${dur.toFixed(2)}s)`);
-          return { id: scene.id, path: out, durationSec: dur };
-        }
-        log.info(`  TTS scene ${scene.id} (${scene.voiceText.length} chars)...`);
-        await ttsClient.generate(scene.voiceText, out, srtOut);
-        await writeFile(textFile, scene.voiceText);
-        const dur = await getDurationSec(out);
-        log.info(`  scene ${scene.id}: ${dur.toFixed(2)}s`);
-        return { id: scene.id, path: out, durationSec: dur };
-      }),
-    ),
-  );
+  // script.json may be edited outside the web UI: a scene whose narration changed
+  // gets a new voice, and its clip (cut to the old length) goes too.
+  const sceneAudio = await voiceScenes(cfg, outputDir, script.scenes, {
+    onStale: async (id) => {
+      await rm(join(outputDir, "clips", `scene-${id}.mp4`), { force: true });
+      await rm(join(outputDir, "clips", `scene-${id}-fit.mp4`), { force: true });
+    },
+  });
 
   // STEP 4 — concat voice + compute scene timings
   log.step(4, TOTAL_STEPS, "Concat voice + compute timings");
