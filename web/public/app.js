@@ -1,6 +1,6 @@
 import {
   api, bust, clear, confirmBox, connectEvents, el, fmtDate, fmtSec, guard, jobLogModal, jobs, liveLog,
-  onJob, playUrl, progressBar, statusChip, toast, waitJob,
+  onJob, onYoutube, playUrl, progressBar, statusChip, toast, waitJob, UPLOAD_STATUS, fmtVN,
 } from "./lib.js";
 import { projectView } from "./editor.js";
 import { store } from "./store.js";
@@ -328,17 +328,90 @@ async function newView(root) {
 async function channelsView(root) {
   const [settings, edgeVoices] = await Promise.all([api("GET", "/api/settings"), store.voices().catch(() => [])]);
   let list = await api("GET", "/api/channels");
+  let yt = await api("GET", "/api/youtube/status").catch(() => null);
   const field = (label, node, hint) => el("label", { class: "field" }, el("span", {}, label, hint ? el("em", {}, hint) : null), node);
   const listBox = el("div", { class: "stack" });
+  const queueBox = el("div", { class: "stack", style: { marginTop: "20px" } });
   const formBox = el("div");
 
   const blank = () => ({
     name: "", language: "vi", niche: "", url: "", brandColor: "#0e9f6e", minutes: 8, music: true, subtitles: true,
     visuals: "ai", aiImageSize: "2K", aiHookVideo: false,
+    autoUpload: false, publishTimes: ["19:00"], privacy: "public", categoryId: "22", declareSynthetic: true,
     voice: settings.GENMAX_API_KEY_SET
       ? { engine: "genmax", rate: "+0%", genmax: { provider: settings.GENMAX_PROVIDER, voiceId: settings.GENMAX_VOICE, model: settings.GENMAX_MODEL, language: settings.GENMAX_LANGUAGE } }
       : { engine: "edge", edgeVoice: "vi-VN-HoaiMyNeural", rate: "+5%" },
   });
+
+  /** Connection status + auto-upload summary under each channel. */
+  function ytLine(c) {
+    if (!yt?.configured) return null;
+    const con = yt.connections?.[c.id];
+    if (!con) return el("div", { class: "small", style: { marginTop: "4px" } }, el("span", { class: "chip" }, "YouTube: chưa kết nối"));
+    if (con.broken) return el("div", { class: "small", style: { marginTop: "4px" } }, el("span", { class: "chip bad" }, `YouTube: ${con.broken} — kết nối lại`));
+    const slot = yt.nextSlots?.[c.id];
+    return el("div", { class: "small row", style: { marginTop: "4px", gap: "6px", flexWrap: "wrap" } },
+      el("span", { class: "chip ok" }, `▶ ${con.youtube.title}`),
+      el("span", { class: c.autoUpload ? "chip accent" : "chip" }, c.autoUpload ? "Tự đăng sau khi render" : "Đăng thủ công"),
+      c.publishTimes?.length
+        ? el("span", { class: "faint" }, `Lịch: ${c.publishTimes.join(", ")}${slot ? ` · giờ trống kế tiếp ${fmtVN(slot)}` : ""}`)
+        : el("span", { class: "faint" }, "Công khai ngay khi tải xong"));
+  }
+
+  function ytButton(c) {
+    if (!yt?.configured) return null;
+    const con = yt.connections?.[c.id];
+    if (!con || con.broken) return el("a", { class: "btn sm", href: `/api/youtube/connect?channel=${encodeURIComponent(c.id)}` }, "🔗 Kết nối YouTube");
+    return el("button", { class: "btn ghost sm", onclick: async () => {
+      if (!(await confirmBox(`Ngắt kết nối "${c.name}" khỏi kênh YouTube "${con.youtube.title}"? Token sẽ bị thu hồi.`, "Ngắt kết nối", true))) return;
+      await guard(() => api("POST", `/api/youtube/disconnect/${c.id}`), "Đã ngắt kết nối");
+      await refreshYt();
+    } }, "Ngắt YouTube");
+  }
+
+  function drawQueue() {
+    if (!yt) return clear(queueBox);
+    if (!yt.configured) {
+      return clear(queueBox, el("div", { class: "callout warn small" },
+        "Chưa có credentials/client_secret.json — tạo OAuth Client ID (Desktop app) trong Google Cloud rồi đặt file vào thư mục credentials/ để đăng YouTube tự động."));
+    }
+    const q = yt.quota;
+    const pct = Math.min(100, Math.round((q.used / q.limit) * 100));
+    const name = (id) => list.find((c) => c.id === id)?.name ?? id;
+    const rows = yt.uploads.slice(0, 40).map((u) => {
+      const [cls, label] = UPLOAD_STATUS[u.status] ?? ["chip", u.status];
+      const when = u.publishAt ? `công khai ${fmtVN(u.publishAt)}` : u.privacy === "public" ? "công khai ngay" : u.privacy === "unlisted" ? "không công khai" : "riêng tư";
+      return el("div", { class: "card row between", style: { padding: "10px 14px" } },
+        el("div", { class: "stack", style: { gap: "2px", minWidth: 0 } },
+          el("div", { class: "row", style: { gap: "8px" } },
+            el("span", { class: cls }, u.status === "uploading" && u.progress != null ? `${label} ${u.progress}%` : label),
+            el("a", { href: `#/p/${encodeURIComponent(u.slug)}`, style: { fontWeight: 600 } }, u.title)),
+          el("div", { class: "small faint" },
+            `${name(u.channelId)} · ${when}` + (u.nextTryAt && u.status === "pending" ? ` · thử lại ${fmtVN(u.nextTryAt)}` : "") + (u.auto ? " · tự động" : "")),
+          u.error ? el("div", { class: "small", style: { color: "var(--bad)" } }, u.error) : null,
+          (u.warnings ?? []).map((w) => el("div", { class: "small", style: { color: "var(--warn)" } }, w))),
+        el("div", { class: "row" },
+          u.videoId ? el("a", { class: "btn sm", href: `https://studio.youtube.com/video/${u.videoId}/edit`, target: "_blank" }, "Mở Studio") : null,
+          u.status === "failed" ? el("button", { class: "btn sm", onclick: () => guard(() => api("POST", `/api/youtube/uploads/${u.id}/retry`), "Đã xếp lại hàng đợi") }, "Thử lại") : null,
+          u.status === "pending" || u.status === "failed"
+            ? el("button", { class: "btn ghost sm danger", onclick: () => guard(() => api("DELETE", `/api/youtube/uploads/${u.id}`), "Đã bỏ khỏi hàng đợi") }, "Bỏ")
+            : null));
+    });
+    clear(queueBox,
+      el("div", { class: "row between" },
+        el("h2", {}, "📤 Hàng đợi đăng YouTube"),
+        el("span", { class: "small muted" }, `Quota hôm nay: ${q.used.toLocaleString("vi-VN")} / ${q.limit.toLocaleString("vi-VN")} (còn ~${Math.floor(q.remaining / 1650)} video) · reset 0h giờ Mỹ`)),
+      el("div", { class: "progress" }, el("div", { style: { width: `${pct}%` } })),
+      el("div", { class: "callout small" },
+        "Khi dự án Google Cloud chưa qua kiểm duyệt (audit) của YouTube, video tải lên qua API sẽ bị YouTube khoá ở chế độ Riêng tư dù đã đặt lịch công khai. Được duyệt rồi thì mọi thứ tự chạy, không cần sửa gì."),
+      rows.length ? rows : el("div", { class: "empty small" }, "Chưa có video nào trong hàng đợi. Bật \"Tự đăng sau khi render\" ở kênh, hoặc bấm Đăng YouTube trong trang video."));
+  }
+
+  async function refreshYt() {
+    yt = await api("GET", "/api/youtube/status").catch(() => yt);
+    drawList();
+    drawQueue();
+  }
 
   function drawList() {
     clear(listBox, list.length === 0
@@ -349,8 +422,10 @@ async function channelsView(root) {
           el("div", {},
             el("b", {}, `${c.language === "en" ? "🇬🇧" : "🇻🇳"} ${c.name}`),
             el("div", { class: "small muted" }, c.niche ? c.niche.slice(0, 110) : "(chưa mô tả chủ đề)"),
-            el("div", { class: "small faint" }, `${c.voice.engine === "genmax" ? `Genmax ${c.voice.genmax?.provider ?? ""}` : c.voice.edgeVoice} · ${c.minutes} phút · ${c.visuals === "stock" ? "video stock" : "ảnh AI"} · id: ${c.id}`))),
+            el("div", { class: "small faint" }, `${c.voice.engine === "genmax" ? `Genmax ${c.voice.genmax?.provider ?? ""}` : c.voice.edgeVoice} · ${c.minutes} phút · ${c.visuals === "stock" ? "video stock" : "ảnh AI"} · id: ${c.id}`),
+            ytLine(c))),
         el("div", { class: "row" },
+          ytButton(c),
           el("button", { class: "btn primary sm", onclick: () => { localStorage.setItem("channelId", c.id); location.hash = "#/new"; } }, "✨ Tạo video"),
           el("button", { class: "btn sm", onclick: () => drawForm(structuredClone(c)) }, "Sửa"),
           el("button", { class: "btn ghost sm danger", onclick: async () => {
@@ -457,6 +532,35 @@ async function channelsView(root) {
     };
     drawVisuals();
     minutes.addEventListener("input", drawVisuals);
+
+    function uploadBox(ch) {
+      ch.publishTimes ??= ["19:00"];
+      ch.privacy ??= "public";
+      ch.categoryId ??= "22";
+      const times = el("input", { type: "text", value: ch.publishTimes.join(", "), placeholder: "vd: 07:00, 19:00",
+        oninput: (e) => (ch.publishTimes = e.target.value.split(/[,\s]+/).filter(Boolean)
+          .map((t) => (/^\d:\d{2}$/.test(t) ? `0${t}` : t)).filter((t) => /^\d{2}:\d{2}$/.test(t))) });
+      const privacy = el("select", { onchange: (e) => (ch.privacy = e.target.value) },
+        el("option", { value: "public" }, "Công khai"), el("option", { value: "unlisted" }, "Không công khai (có link mới xem được)"), el("option", { value: "private" }, "Riêng tư"));
+      privacy.value = ch.privacy;
+      const cat = el("select", { onchange: (e) => (ch.categoryId = e.target.value) },
+        [["22", "Mọi người & Blog"], ["25", "Tin tức & Chính trị"], ["17", "Thể thao"], ["24", "Giải trí"], ["27", "Giáo dục"], ["28", "Khoa học & Công nghệ"], ["10", "Âm nhạc"], ["20", "Trò chơi"]]
+          .map(([v, l]) => el("option", { value: v }, l)));
+      cat.value = ch.categoryId;
+      const con = ch.id ? yt?.connections?.[ch.id] : null;
+      return el("div", { class: "stack" },
+        el("label", { class: "check" }, el("input", { type: "checkbox", checked: !!ch.autoUpload, onchange: (e) => (ch.autoUpload = e.target.checked) }),
+          "Tự đăng lên YouTube ngay khi render xong"),
+        el("div", { class: "grid-2" },
+          field("Giờ công khai mỗi ngày (giờ VN)", times, "mỗi video lấy giờ trống kế tiếp; để trống = công khai ngay"),
+          field("Chế độ hiển thị", privacy, "khi không đặt lịch"),
+          field("Danh mục YouTube", cat)),
+        el("label", { class: "check" }, el("input", { type: "checkbox", checked: ch.declareSynthetic !== false, onchange: (e) => (ch.declareSynthetic = e.target.checked) }),
+          "Khai báo \"nội dung đã chỉnh sửa / tạo bằng AI\" (nên bật vì giọng và ảnh là AI)"),
+        !ch.id ? el("p", { class: "small faint", style: { margin: 0 } }, "Lưu kênh trước, rồi bấm \"Kết nối YouTube\" ở danh sách kênh.")
+          : con ? el("p", { class: "small faint", style: { margin: 0 } }, `Đã kết nối: ${con.youtube.title}`)
+          : el("p", { class: "small", style: { margin: 0, color: "var(--warn)" } }, "Kênh chưa kết nối YouTube — bấm \"Kết nối YouTube\" ở danh sách kênh."));
+    }
     const sample = el("input", { type: "text", value: ch.language === "vi" ? "Chào mừng các bạn quay trở lại với kênh. Hôm nay chúng ta sẽ cùng tìm hiểu một câu chuyện rất thú vị." : "Welcome back to the channel. Today we are diving into a story you will not want to miss." });
     const tryBtn = el("button", { class: "btn", onclick: async (e) => {
       const b = e.currentTarget;
@@ -484,6 +588,8 @@ async function channelsView(root) {
       el("div", { class: "row" }, check("subtitles", "In phụ đề lên video"), check("music", "Nhạc nền")),
       el("h3", {}, "🖼 Hình minh hoạ"),
       visualsBox,
+      el("h3", {}, "📤 Đăng YouTube"),
+      uploadBox(ch),
       ch.id ? el("p", { class: "small faint", style: { margin: 0 } }, `Nhạc riêng của kênh: chép mp3 vào assets/music/${ch.id}/`) : null,
       el("div", { class: "row" }, el("button", { class: "btn primary", onclick: async () => {
         if (!ch.name?.trim()) return toast("Nhập tên kênh", "warn");
@@ -497,11 +603,13 @@ async function channelsView(root) {
   }
 
   drawList();
+  drawQueue();
   clear(root,
     el("div", { class: "page-head" },
       el("div", {}, el("h1", {}, "Kênh YouTube"), el("p", {}, "Mỗi kênh: ngôn ngữ, giọng đọc, chủ đề, màu riêng. Video dài được làm theo kênh bạn chọn.")),
       el("button", { class: "btn primary", onclick: () => drawForm(blank()) }, "+ Thêm kênh")),
-    listBox, formBox);
+    listBox, formBox, queueBox);
+  return onYoutube(refreshYt);
 }
 
 // ── Templates ──────────────────────────────────────────────────────────────

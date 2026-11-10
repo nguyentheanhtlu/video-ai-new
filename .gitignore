@@ -16,3 +16,9 @@ assets/sfx/
 # Channel profiles (per machine) and background music (licensed per user)
 data/
 assets/music/
+
+# OAuth client secret + per-channel YouTube tokens (never commit)
+credentials/
+
+# Static OAuth branding pages (published separately to nguyentheanhtlu/yt-auto-uploader)
+oauth-site/
